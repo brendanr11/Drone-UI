@@ -1,9 +1,13 @@
+# macOS
+.DS_Store
 
-# JetBrains / WebStorm
-.idea/
+# Node
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.env
+*.log
 
-# JetBrains / WebStorm
-.idea/
-
-# JetBrains / WebStorm
+# JetBrains
 .idea/
