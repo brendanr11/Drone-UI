@@ -1,4 +1,4 @@
-# Drone-UI (Figma Make Extract) — Local Run Guide
+# Drone-UI — Local Run Guide
 
 This is a React + Vite project extracted from Figma Make.
 
