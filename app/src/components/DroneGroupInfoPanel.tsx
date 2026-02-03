@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
-import type { Drone } from "@/components/App";
+import type { Drone } from '../App';
 
 interface DroneGroupInfoPanelProps {
   selectedGroup: 1 | 2 | 3 | 4 | 5 | 6 | 7;

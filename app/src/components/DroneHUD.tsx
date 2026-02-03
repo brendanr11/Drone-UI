@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, Battery, Signal, Maximize2, Minimize2, AlertCircle, CheckCircle, AlertTriangle } from 'lucide-react';
 import { Button } from './ui/button';
 import { useState } from 'react';
-import type { Drone } from "@/components/App";
+import type { Drone } from '../App';
 import type { Alert } from './AlertsPanel';
 
 // Reusable Crosshair Component

@@ -1,9 +1,9 @@
 "use client";
 
 import * as React from "react";
-import * as HoverCardPrimitive from "@radix-ui/react-hover-card";
+import * as HoverCardPrimitive from "@radix-ui/react-hover-card@1.1.6";
 
-import { cn } from "@/lib/utils";
+import { cn } from "./utils";
 
 function HoverCard({
   ...props

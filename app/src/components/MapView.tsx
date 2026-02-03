@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { MapPin } from 'lucide-react';
 import { WaypointDialog } from './WaypointDialog';
-import type { Drone } from "@/components/App";
+import type { Drone } from '../App';
 
 interface POI {
   id: string;

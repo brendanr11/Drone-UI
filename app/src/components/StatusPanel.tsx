@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { PieMenu } from './PieMenu';
-import type { Drone } from "@/components/App";
+import type { Drone } from '../App';
 
 interface StatusPanelProps {
   selectedGroup: 1 | 2 | 3 | 4 | 5 | 6 | 7;

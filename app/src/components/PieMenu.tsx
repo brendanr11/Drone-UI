@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { Drone } from "@/components/App";
+import type { Drone } from '../App';
 
 interface PieMenuProps {
   x: number;

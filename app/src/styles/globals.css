@@ -1,3 +1,7 @@
+@import "tailwindcss";
+/* Tailwind v4 content scanning */
+@source "../../index.html";
+@source "../**/*.{js,ts,jsx,tsx}";
 @custom-variant dark (&:is(.dark *));
 
 :root {

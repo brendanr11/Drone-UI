@@ -4,7 +4,7 @@ import { StatusPanel } from './StatusPanel';
 import { Compass } from './Compass';
 import { DroneGroupInfoPanel } from './DroneGroupInfoPanel';
 import { AlertsPanel, Alert } from './AlertsPanel';
-import type { Drone } from "@/components/App";
+import type { Drone } from '../App';
 
 interface MapViewUIProps {
   selectedGroup: 1 | 2 | 3 | 4 | 5 | 6 | 7;
