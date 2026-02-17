@@ -11,7 +11,7 @@ Use in a browser or on a tablet (recommended):
 
 - Render: https://drone-ui-f63q.onrender.com/
 
-**Tip:** On iPad/Android, “Add to Home Screen” for a full-screen feel.
+**Tip:** On iPad/Android, use “Add to Home Screen” for full-screen.
 
 ---
 
@@ -26,25 +26,25 @@ cd app
 npm install
 npm run dev
 ```
-Open the URL printed by Vite (usually http://localhost:5173).
-Test on a tablet over Wi-Fi
+Open the URL printed by Vite (should be http://localhost:5173).
+Use on a tablet connected to Wi-Fi
 
 Expose Vite to your LAN:
 ```bash
 npm run dev -- --host
 ```
-Then browse to your laptop’s LAN IP from the tablet, e.g. http://192.168.x.x:5173.
+Then browse to your laptop’s LAN IP from the tablet, (such as http://192.168.x.x:5173)
 
 ## Touch & Basic Use
 - Pan / Zoom: two-finger pan; pinch to zoom
-- Box / Multi-Select: drag to select multiple items (where available)
-- Control Groups (if present): long-press to save a selection; tap a group tab to recall
-- Alerts (if present): tap an alert to jump to event; use on-screen control to return
-- Minimap (if present): quick spatial awareness and event panning
+- Box / Multi-Select: drag to select multiple items (not in first-person view)
+- Control Groups: long-press to save a selection; tap a group tab to recall
+- Alerts: tap an alert to jump to event; use on-screen control to return
+- Minimap: For quick reference when in first-person
 
 Note: This is a prototype; some features may be stubs or visuals only.
 
-## Deploy on Render (Static Site)
+## Deployed on Render (Static Site)
 - Service type: Static Site
 - Root directory: app
 - Build command: npm ci && npm run build
