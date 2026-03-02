@@ -17,7 +17,7 @@ interface Waypoint {
 interface WaypointDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (name: string, lat: number, lng: number) => void;
+  onSave: (name: string, lat: number, lng: number, type: Waypoint['type']) => void;
   waypoint: Waypoint;
 }
 
@@ -25,15 +25,17 @@ export function WaypointDialog({ isOpen, onClose, onSave, waypoint }: WaypointDi
   const [name, setName] = useState(waypoint.name);
   const [lat, setLat] = useState(waypoint.lat?.toString() || '0');
   const [lng, setLng] = useState(waypoint.lng?.toString() || '0');
+  const [type, setType] = useState<Waypoint['type']>(waypoint.type);
 
   useEffect(() => {
     setName(waypoint.name);
     setLat(waypoint.lat?.toString() || '0');
     setLng(waypoint.lng?.toString() || '0');
+    setType(waypoint.type);
   }, [waypoint]);
 
   const handleSave = () => {
-    onSave(name, parseFloat(lat), parseFloat(lng));
+    onSave(name, parseFloat(lat), parseFloat(lng), type);
   };
 
   return (
@@ -56,6 +58,20 @@ export function WaypointDialog({ isOpen, onClose, onSave, waypoint }: WaypointDi
               className="bg-slate-700 border-slate-600 text-white"
               placeholder="Enter waypoint name"
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="type" className="text-slate-300">Type</Label>
+            <select
+              id="type"
+              value={type}
+              onChange={(e) => setType(e.target.value as Waypoint['type'])}
+              className="w-full h-9 rounded-md bg-slate-700 border border-slate-600 px-3 text-sm text-white"
+            >
+              <option value="waypoint">Waypoint</option>
+              <option value="target">Target</option>
+              <option value="home">Home Base</option>
+            </select>
           </div>
           
           <div className="grid grid-cols-2 gap-4">

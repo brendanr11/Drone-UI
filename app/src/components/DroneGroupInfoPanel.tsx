@@ -5,9 +5,16 @@ import type { Drone } from '../App';
 interface DroneGroupInfoPanelProps {
   selectedGroup: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   drones: Drone[];
+  distanceToTargetKm: number | null;
+  targetCount: number;
 }
 
-export function DroneGroupInfoPanel({ selectedGroup, drones }: DroneGroupInfoPanelProps) {
+export function DroneGroupInfoPanel({
+  selectedGroup,
+  drones,
+  distanceToTargetKm,
+  targetCount
+}: DroneGroupInfoPanelProps) {
   const [isExpanded, setIsExpanded] = useState(true);
 
   // Calculate group stats
@@ -16,8 +23,6 @@ export function DroneGroupInfoPanel({ selectedGroup, drones }: DroneGroupInfoPan
     ? Math.round(drones.reduce((sum, d) => sum + d.battery, 0) / drones.length) 
     : 0;
   const activeDrones = drones.length;
-  // Simulated distance to target - in a real app this would be calculated based on actual positions
-  const distanceToTarget = 2.4;
 
   return (
     <div className="bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg p-4 min-w-[250px]">
@@ -44,8 +49,14 @@ export function DroneGroupInfoPanel({ selectedGroup, drones }: DroneGroupInfoPan
             <span className="text-white">{avgBattery}%</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-400">DISTANCE TO TARGET</span>
-            <span className="text-white">{distanceToTarget} km</span>
+            <span className="text-slate-400">NEAREST TARGET</span>
+            <span className="text-white">
+              {distanceToTargetKm === null ? '--' : `${distanceToTargetKm} km`}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">TARGETS ON MAP</span>
+            <span className="text-white">{targetCount}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-slate-400">ACTIVE DRONES</span>

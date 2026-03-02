@@ -1,7 +1,10 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DroneHUD } from './components/DroneHUD';
 import { MapViewUI } from './components/MapViewUI';
 import type { Alert } from './components/AlertsPanel';
+import { StudyControlPanel, type StudyModule } from './components/StudyControlPanel';
+import { downloadTextFile, eventsToCsv, type TelemetryEvent } from './lib/telemetry';
+import { droneMapPositions } from './components/mapData';
 
 // Combined drone data structure
 export interface Drone {
@@ -61,96 +64,1131 @@ const allDrones: Drone[] = [
 ];
 
 type ViewMode = 'FPV' | 'MAP';
+type GroupId = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type ControlGroups = Record<GroupId, string[]>;
+const groupIds = [1, 2, 3, 4, 5, 6, 7] as const;
 
-const initialAlerts: Alert[] = [
-  { id: 1, type: 'warning', message: 'Low battery on Drone 3', time: '2m ago', details: 'Battery at 23%. Return to base recommended.' },
-  { id: 2, type: 'info', message: 'Waypoint reached', time: '5m ago', details: 'Drone 5 reached waypoint 2.' },
-  { id: 3, type: 'success', message: 'Mission update completed', time: '8m ago', details: 'All drones updated with new waypoints.' },
+interface MapCameraState {
+  pan: { x: number; y: number };
+  zoom: number;
+}
+
+interface AlertFocusRequest {
+  requestId: number;
+  alertId: number;
+  x: number;
+  y: number;
+  zoom?: number;
+}
+
+interface ActiveTaskMetrics {
+  taskId: string;
+  module: StudyModule;
+  condition: 'A' | 'B';
+  startedAt: number;
+  interactionCount: number;
+  wrongTargetAssignments: number;
+  correctTargetAssignments: number;
+  controlIncorrectTapCount: number;
+  controlNonTargetTapCount: number;
+  controlDroneTapCount: number;
+  controlBackgroundTapCount: number;
+  controlRoleSwitchCount: number;
+  alertResponseTimesMs: number[];
+  minimapAckTimesMs: number[];
+  distanceSamples: number;
+  nearestDistanceKm: number | null;
+  farthestDistanceKm: number | null;
+  overshootCount: number;
+  previousDistanceKm: number | null;
+}
+
+interface LastTaskSummary {
+  module: StudyModule;
+  condition: 'A' | 'B';
+  outcome: 'complete' | 'fail';
+  durationMs: number | null;
+  interactions: number;
+  controlCorrectCount: number;
+  controlWrongCount: number;
+  controlIncorrectTapCount: number;
+  alertsHandled: number;
+  minimapAcks: number;
+  timestamp: number;
+}
+
+interface ControlTargetGoal {
+  groupId: 1 | 2 | 3;
+  label: string;
+  targetId: string;
+  targetName: string;
+}
+
+const controlTargetGoals: ControlTargetGoal[] = [
+  { groupId: 1, label: 'Recon', targetId: '4', targetName: 'Target Alpha' },
+  { groupId: 2, label: 'Relay', targetId: '6', targetName: 'Target Bravo' },
+  { groupId: 3, label: 'Delivery', targetId: '7', targetName: 'Target Charlie' },
 ];
+
+const alertTemplateSpecs = [
+  {
+    templateId: 'battery-critical',
+    type: 'warning' as const,
+    message: (droneLabel: string) => `Critical battery warning: ${droneLabel}`,
+    details: 'This drone battery is under 25%. Acknowledge, inspect status, and retask immediately.',
+  },
+  {
+    templateId: 'sensor-anomaly',
+    type: 'info' as const,
+    message: (droneLabel: string) => `Sensor anomaly detected near ${droneLabel}`,
+    details: 'Check this drone telemetry feed, validate marker, then return to previous task.',
+  },
+  {
+    templateId: 'mission-retask',
+    type: 'success' as const,
+    message: (droneLabel: string) => `Retask update available for ${droneLabel}`,
+    details: 'Jump to this event, confirm route update for that drone, then quick-back to continue.',
+  },
+];
+
+const alertDronePool = [
+  { id: '1-3', name: 'Alpha 3' },
+  { id: '2-2', name: 'Bravo 2' },
+  { id: '3-1', name: 'Charlie 1' },
+  { id: '4-2', name: 'Echo 2' },
+  { id: '5-1', name: 'Foxtrot 1' },
+  { id: '6-2', name: 'Golf 2' },
+  { id: '7-3', name: 'Delta 3' },
+];
+
+const buildAlertBatch = (batchId: number): Alert[] => {
+  const now = Date.now();
+  return alertTemplateSpecs.map((template, index) => {
+    const drone = alertDronePool[(batchId + index) % alertDronePool.length];
+    const droneLabel = `Drone ${drone.id} (${drone.name})`;
+    const mapPosition = droneMapPositions[drone.id] || { x: 50, y: 50 };
+    return {
+      id: batchId * 100 + index + 1,
+      type: template.type,
+      message: template.message(droneLabel),
+      time: 'just now',
+      details: `${template.details} (Scenario ${batchId})`,
+      mapX: mapPosition.x,
+      mapY: mapPosition.y,
+      locationLabel: droneLabel,
+      createdAt: now,
+      batchId,
+      templateId: template.templateId,
+    };
+  });
+};
+
+const buildInitialControlGroups = (): ControlGroups => {
+  const groups = {} as ControlGroups;
+
+  groupIds.forEach((groupId) => {
+    groups[groupId] = allDrones
+      .filter((drone) => drone.groupId === groupId)
+      .map((drone) => drone.id);
+  });
+
+  return groups;
+};
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('FPV');
-  const [selectedGroup, setSelectedGroup] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
+  const [selectedGroup, setSelectedGroup] = useState<GroupId>(1);
   const [selectedDroneId, setSelectedDroneId] = useState<string>('1-5');
-  const [alerts, setAlerts] = useState<Alert[]>(initialAlerts);
+  const [controlTaskActiveGroupId, setControlTaskActiveGroupId] = useState<1 | 2 | 3>(1);
+  const [controlGroups, setControlGroups] = useState<ControlGroups>(() => buildInitialControlGroups());
+  const [isGroupEditMode, setIsGroupEditMode] = useState(false);
+  const [alertBatchId, setAlertBatchId] = useState(1);
+  const [alerts, setAlerts] = useState<Alert[]>(() => buildAlertBatch(1));
   const [expandedAlert, setExpandedAlert] = useState<number | null>(null);
+  const [returnContext, setReturnContext] = useState<{
+    viewMode: ViewMode;
+    droneId: string;
+    alertId: number;
+    jumpedAt: number;
+    mapCameraBeforeJump: MapCameraState | null;
+  } | null>(null);
+  const [mapCamera, setMapCamera] = useState<MapCameraState>({
+    pan: { x: 0, y: 0 },
+    zoom: 1,
+  });
+  const [alertFocusRequest, setAlertFocusRequest] = useState<AlertFocusRequest | null>(null);
+  const [cameraRestoreRequest, setCameraRestoreRequest] = useState<{
+    requestId: number;
+    pan: { x: number; y: number };
+    zoom: number;
+  } | null>(null);
+  const [groupTargetAssignments, setGroupTargetAssignments] = useState<Partial<Record<GroupId, string>>>({});
+  const [latestDistanceToTargetKm, setLatestDistanceToTargetKm] = useState<number | null>(null);
+  const [minimapStatusSignalVisible, setMinimapStatusSignalVisible] = useState(false);
+  const [minimapStatusAppearedAt, setMinimapStatusAppearedAt] = useState<number | null>(null);
+  const [minimapStatusId, setMinimapStatusId] = useState(0);
+  const [scenarioResetCount, setScenarioResetCount] = useState(0);
 
-  const getGroupDrones = (groupId: 1 | 2 | 3 | 4 | 5 | 6 | 7) => {
-    return allDrones.filter(drone => drone.groupId === groupId);
+  const [sessionId] = useState(
+    () => `session-${new Date().toISOString().replace(/[:.]/g, '-')}`
+  );
+  const [participantId, setParticipantId] = useState('');
+  const [studyModule, setStudyModule] = useState<StudyModule>('control-groups');
+  const [studyCondition, setStudyCondition] = useState<'A' | 'B'>('A');
+  const [taskStartAt, setTaskStartAt] = useState<number | null>(null);
+  const [eventLog, setEventLog] = useState<TelemetryEvent[]>([]);
+  const [lastTaskSummary, setLastTaskSummary] = useState<LastTaskSummary | null>(null);
+  const activeTaskRef = useRef<ActiveTaskMetrics | null>(null);
+  const alertBatchCounterRef = useRef(1);
+  const minimapStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const minimapStatusIdRef = useRef(0);
+  const alertFocusRequestIdRef = useRef(0);
+  const cameraRestoreRequestIdRef = useRef(0);
+  const controlGoalsCompleteRef = useRef(false);
+
+  const dronesById = useMemo(
+    () => new Map(allDrones.map((drone) => [drone.id, drone])),
+    []
+  );
+
+  const trackEvent = useCallback(
+    (eventName: string, details: Record<string, unknown> = {}) => {
+      const event: TelemetryEvent = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: new Date().toISOString(),
+        sessionId,
+        participantId: participantId.trim() || 'unassigned',
+        module: studyModule,
+        condition: studyCondition,
+        viewMode,
+        selectedGroup,
+        eventName,
+        details: JSON.stringify(details),
+      };
+
+      setEventLog((prev) => [...prev, event]);
+    },
+    [participantId, selectedGroup, sessionId, studyCondition, studyModule, viewMode]
+  );
+
+  const bumpInteractionCount = useCallback(() => {
+    if (activeTaskRef.current) {
+      activeTaskRef.current.interactionCount += 1;
+    }
+  }, []);
+
+  const clearMinimapStatusTimer = useCallback(() => {
+    if (minimapStatusTimerRef.current) {
+      clearTimeout(minimapStatusTimerRef.current);
+      minimapStatusTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleMinimapStatusSignal = useCallback(
+    (reason: 'reset' | 'task_start' | 'manual') => {
+      clearMinimapStatusTimer();
+      const delayMs = reason === 'manual' ? 250 : 3500 + (scenarioResetCount % 3) * 1000;
+      minimapStatusTimerRef.current = setTimeout(() => {
+        minimapStatusIdRef.current += 1;
+        const signalId = minimapStatusIdRef.current;
+        const appearedAt = Date.now();
+        setMinimapStatusId(signalId);
+        setMinimapStatusAppearedAt(appearedAt);
+        setMinimapStatusSignalVisible(true);
+        trackEvent('minimap_status_presented', { signalId, reason });
+      }, delayMs);
+      trackEvent('minimap_status_scheduled', { reason, delayMs });
+    },
+    [clearMinimapStatusTimer, scenarioResetCount, trackEvent]
+  );
+
+  const resetModuleScenario = useCallback(
+    (reason: 'manual' | 'task_start') => {
+      setScenarioResetCount((prev) => prev + 1);
+      setAlertFocusRequest(null);
+      setCameraRestoreRequest(null);
+
+      if (studyModule === 'control-groups') {
+        const resetGroups = buildInitialControlGroups();
+        setControlGroups(resetGroups);
+        setIsGroupEditMode(false);
+        setGroupTargetAssignments({});
+        setLatestDistanceToTargetKm(null);
+        setControlTaskActiveGroupId(1);
+        setSelectedGroup(1);
+        if (resetGroups[1].length > 0) {
+          setSelectedDroneId(resetGroups[1][0]);
+        }
+        controlGoalsCompleteRef.current = false;
+        trackEvent('control_groups_scenario_reset', { reason });
+        if (activeTaskRef.current?.module === 'control-groups') {
+          activeTaskRef.current.correctTargetAssignments = 0;
+          activeTaskRef.current.wrongTargetAssignments = 0;
+          activeTaskRef.current.controlIncorrectTapCount = 0;
+          activeTaskRef.current.controlNonTargetTapCount = 0;
+          activeTaskRef.current.controlDroneTapCount = 0;
+          activeTaskRef.current.controlBackgroundTapCount = 0;
+          activeTaskRef.current.controlRoleSwitchCount = 0;
+        }
+      }
+
+      if (studyModule === 'alerts') {
+        const nextBatchId = alertBatchCounterRef.current + 1;
+        alertBatchCounterRef.current = nextBatchId;
+        setAlertBatchId(nextBatchId);
+        const nextAlerts = buildAlertBatch(nextBatchId);
+        setAlerts(nextAlerts);
+        setExpandedAlert(null);
+        setReturnContext(null);
+        trackEvent('alert_batch_generated', {
+          reason,
+          batchId: nextBatchId,
+          alertIds: nextAlerts.map((alert) => alert.id),
+          severities: nextAlerts.map((alert) => alert.type),
+        });
+        if (activeTaskRef.current?.module === 'alerts') {
+          activeTaskRef.current.alertResponseTimesMs = [];
+        }
+      }
+
+      if (studyModule === 'minimap') {
+        setMinimapStatusSignalVisible(false);
+        setMinimapStatusAppearedAt(null);
+        scheduleMinimapStatusSignal(reason);
+        if (activeTaskRef.current?.module === 'minimap') {
+          activeTaskRef.current.minimapAckTimesMs = [];
+        }
+      } else {
+        clearMinimapStatusTimer();
+      }
+
+      trackEvent('module_scenario_reset', {
+        module: studyModule,
+        condition: studyCondition,
+        reason,
+      });
+    },
+    [clearMinimapStatusTimer, scheduleMinimapStatusSignal, studyCondition, studyModule, trackEvent]
+  );
+
+  useEffect(() => {
+    return () => {
+      clearMinimapStatusTimer();
+    };
+  }, [clearMinimapStatusTimer]);
+
+  const getGroupDrones = useCallback(
+    (groupId: GroupId) => {
+      const droneIds = controlGroups[groupId] || [];
+      return droneIds
+        .map((droneId) => dronesById.get(droneId))
+        .filter((drone): drone is Drone => Boolean(drone));
+    },
+    [controlGroups, dronesById]
+  );
+
+  const selectedGroupDroneIds = controlGroups[selectedGroup] || [];
+  const selectedGroupDrones = getGroupDrones(selectedGroup);
+  const selectedDrone =
+    dronesById.get(selectedDroneId) || selectedGroupDrones[0] || allDrones[0];
+  const isTaskActive = taskStartAt !== null;
+  const isControlTaskActive = isTaskActive && studyModule === 'control-groups';
+  const isSavedGroupFeatureEnabled = !(studyModule === 'control-groups' && studyCondition === 'B');
+  const isAlertJumpEnabled = !(studyModule === 'alerts' && studyCondition === 'B');
+  const mapRotationDeg =
+    studyModule === 'minimap' && studyCondition === 'B' ? -selectedDrone.heading : 0;
+
+  const handleSelectDrone = (droneId: string, source = 'select') => {
+    setSelectedDroneId(droneId);
+    bumpInteractionCount();
+    trackEvent('drone_selected', { droneId, source });
   };
+
+  const handleGroupChange = (groupId: GroupId) => {
+    const targetGroupIds = controlGroups[groupId] || [];
+    setSelectedGroup(groupId);
+
+    if (targetGroupIds.length > 0 && !targetGroupIds.includes(selectedDroneId)) {
+      setSelectedDroneId(targetGroupIds[0]);
+    }
+
+    bumpInteractionCount();
+    trackEvent('group_selected', { groupId });
+
+    if (isControlTaskActive && (groupId === 1 || groupId === 2 || groupId === 3)) {
+      setControlTaskActiveGroupId(groupId);
+      trackEvent('control_task_group_selected', {
+        groupId,
+        source: 'status_panel',
+      });
+      if (activeTaskRef.current?.module === 'control-groups') {
+        activeTaskRef.current.controlRoleSwitchCount += 1;
+      }
+    }
+  };
+
+  const handleEnterGroupEditMode = (groupId: GroupId) => {
+    if (!isSavedGroupFeatureEnabled) {
+      bumpInteractionCount();
+      trackEvent('group_edit_mode_blocked', {
+        groupId,
+        reason: 'condition_b_baseline',
+      });
+      return;
+    }
+
+    setSelectedGroup(groupId);
+    setIsGroupEditMode(true);
+    bumpInteractionCount();
+    trackEvent('group_edit_mode_entered', { groupId, source: 'long_press' });
+  };
+
+  const handleExitGroupEditMode = () => {
+    if (!isGroupEditMode) return;
+    setIsGroupEditMode(false);
+    bumpInteractionCount();
+    trackEvent('group_edit_mode_exited', { groupId: selectedGroup });
+  };
+
+  const handleToggleDroneInSelectedGroup = (droneId: string) => {
+    if (!isSavedGroupFeatureEnabled) {
+      bumpInteractionCount();
+      trackEvent('group_member_edit_blocked', {
+        groupId: selectedGroup,
+        droneId,
+        reason: 'condition_b_baseline',
+      });
+      return;
+    }
+
+    const currentMembers = controlGroups[selectedGroup] || [];
+    const isMember = currentMembers.includes(droneId);
+    const nextMembers = isMember
+      ? currentMembers.filter((id) => id !== droneId)
+      : [...currentMembers, droneId];
+
+    setControlGroups((prev) => ({
+      ...prev,
+      [selectedGroup]: nextMembers,
+    }));
+
+    if (isMember && selectedDroneId === droneId && nextMembers.length > 0) {
+      setSelectedDroneId(nextMembers[0]);
+    }
+
+    bumpInteractionCount();
+    trackEvent(isMember ? 'group_member_removed' : 'group_member_added', {
+      groupId: selectedGroup,
+      droneId,
+      source: 'tap',
+      groupSize: nextMembers.length,
+    });
+  };
+
+  const handleAddDronesToSelectedGroup = (droneIds: string[]) => {
+    if (droneIds.length === 0) return;
+    if (!isSavedGroupFeatureEnabled) {
+      bumpInteractionCount();
+      trackEvent('group_members_added_box_blocked', {
+        groupId: selectedGroup,
+        attemptedCount: droneIds.length,
+        reason: 'condition_b_baseline',
+      });
+      return;
+    }
+
+    const currentMembers = controlGroups[selectedGroup] || [];
+    const uniqueDroneIds = droneIds.filter((droneId) => !currentMembers.includes(droneId));
+
+    if (uniqueDroneIds.length === 0) {
+      bumpInteractionCount();
+      trackEvent('group_members_added_box', {
+        groupId: selectedGroup,
+        addedCount: 0,
+        attemptedCount: droneIds.length,
+      });
+      return;
+    }
+
+    const nextMembers = [...currentMembers, ...uniqueDroneIds];
+    setControlGroups((prev) => ({
+      ...prev,
+      [selectedGroup]: nextMembers,
+    }));
+
+    bumpInteractionCount();
+    trackEvent('group_members_added_box', {
+      groupId: selectedGroup,
+      addedDroneIds: uniqueDroneIds,
+      addedCount: uniqueDroneIds.length,
+      groupSize: nextMembers.length,
+    });
+  };
+
+  const selectControlTaskGroup = useCallback(
+    (groupId: 1 | 2 | 3, source: 'task_overlay' | 'auto_advance') => {
+      const targetGroupIds = controlGroups[groupId] || [];
+      setControlTaskActiveGroupId(groupId);
+      setSelectedGroup(groupId);
+      if (targetGroupIds.length > 0 && !targetGroupIds.includes(selectedDroneId)) {
+        setSelectedDroneId(targetGroupIds[0]);
+      }
+
+      trackEvent('control_task_group_selected', { groupId, source });
+      if (source === 'task_overlay') {
+        bumpInteractionCount();
+        if (activeTaskRef.current?.module === 'control-groups') {
+          activeTaskRef.current.controlRoleSwitchCount += 1;
+        }
+      }
+    },
+    [bumpInteractionCount, controlGroups, selectedDroneId, trackEvent]
+  );
+
+  const handleSelectControlTaskGroup = useCallback(
+    (groupId: 1 | 2 | 3) => {
+      selectControlTaskGroup(groupId, 'task_overlay');
+    },
+    [selectControlTaskGroup]
+  );
+
+  const handleAssignSelectedGroupToTarget = useCallback(
+    (target: { id: string; name: string; type: 'waypoint' | 'home' | 'target' }) => {
+      if (target.type !== 'target') {
+        return;
+      }
+
+      const assignmentGroupId: GroupId = isControlTaskActive
+        ? controlTaskActiveGroupId
+        : selectedGroup;
+
+      bumpInteractionCount();
+      setGroupTargetAssignments((prev) => {
+        const currentlyAssigned = prev[assignmentGroupId];
+        const nextAssignments = { ...prev };
+        let assignedTargetId: string | null = target.id;
+
+        if (currentlyAssigned === target.id) {
+          delete nextAssignments[assignmentGroupId];
+          assignedTargetId = null;
+        } else {
+          nextAssignments[assignmentGroupId] = target.id;
+        }
+
+        const goal = controlTargetGoals.find((spec) => spec.groupId === assignmentGroupId);
+        const isCorrect = assignedTargetId !== null && goal?.targetId === assignedTargetId;
+
+        if (assignedTargetId === null) {
+          trackEvent('group_target_unassigned', {
+            groupId: assignmentGroupId,
+            targetId: target.id,
+            targetName: target.name,
+          });
+        } else {
+          trackEvent('group_target_assigned', {
+            groupId: assignmentGroupId,
+            targetId: target.id,
+            targetName: target.name,
+            expectedTargetId: goal?.targetId ?? null,
+            isCorrect,
+          });
+        }
+
+        if (activeTaskRef.current?.module === 'control-groups') {
+          if (assignedTargetId === null) {
+            activeTaskRef.current.controlIncorrectTapCount += 1;
+          } else if (isCorrect) {
+            activeTaskRef.current.correctTargetAssignments += 1;
+          } else {
+            activeTaskRef.current.wrongTargetAssignments += 1;
+            activeTaskRef.current.controlIncorrectTapCount += 1;
+          }
+        }
+
+        const allGoalsSatisfied = controlTargetGoals.every(
+          (spec) => nextAssignments[spec.groupId] === spec.targetId
+        );
+        if (allGoalsSatisfied && !controlGoalsCompleteRef.current) {
+          controlGoalsCompleteRef.current = true;
+          trackEvent('control_groups_goal_completed', {
+            assignments: controlTargetGoals.map((spec) => ({
+              groupId: spec.groupId,
+              expectedTargetId: spec.targetId,
+              assignedTargetId: nextAssignments[spec.groupId] ?? null,
+            })),
+          });
+        }
+
+        if (!allGoalsSatisfied) {
+          controlGoalsCompleteRef.current = false;
+        }
+
+        if (
+          isControlTaskActive &&
+          isCorrect &&
+          assignedTargetId !== null
+        ) {
+          const nextPendingGoal = controlTargetGoals.find(
+            (spec) => nextAssignments[spec.groupId] !== spec.targetId
+          );
+          if (nextPendingGoal && nextPendingGoal.groupId !== controlTaskActiveGroupId) {
+            selectControlTaskGroup(nextPendingGoal.groupId, 'auto_advance');
+          }
+        }
+
+        return nextAssignments;
+      });
+    },
+    [
+      bumpInteractionCount,
+      controlTaskActiveGroupId,
+      isControlTaskActive,
+      selectControlTaskGroup,
+      selectedGroup,
+      trackEvent,
+    ]
+  );
+
+  const handleDistanceToTargetChange = useCallback((distanceToTargetKm: number | null) => {
+    setLatestDistanceToTargetKm(distanceToTargetKm);
+    if (!activeTaskRef.current || distanceToTargetKm === null) {
+      return;
+    }
+
+    activeTaskRef.current.distanceSamples += 1;
+    if (
+      activeTaskRef.current.nearestDistanceKm === null ||
+      distanceToTargetKm < activeTaskRef.current.nearestDistanceKm
+    ) {
+      activeTaskRef.current.nearestDistanceKm = distanceToTargetKm;
+    }
+    if (
+      activeTaskRef.current.farthestDistanceKm === null ||
+      distanceToTargetKm > activeTaskRef.current.farthestDistanceKm
+    ) {
+      activeTaskRef.current.farthestDistanceKm = distanceToTargetKm;
+    }
+    if (
+      activeTaskRef.current.previousDistanceKm !== null &&
+      distanceToTargetKm > activeTaskRef.current.previousDistanceKm + 0.4
+    ) {
+      activeTaskRef.current.overshootCount += 1;
+      trackEvent('distance_overshoot_detected', {
+        previousDistanceKm: activeTaskRef.current.previousDistanceKm,
+        currentDistanceKm: distanceToTargetKm,
+      });
+    }
+    activeTaskRef.current.previousDistanceKm = distanceToTargetKm;
+  }, [trackEvent]);
+
+  const handleMapInteraction = useCallback(
+    (eventName: string, details: Record<string, unknown> = {}) => {
+      bumpInteractionCount();
+      trackEvent(eventName, details);
+
+      if (activeTaskRef.current?.module !== 'control-groups') {
+        return;
+      }
+
+      if (eventName === 'map_background_tapped') {
+        activeTaskRef.current.controlBackgroundTapCount += 1;
+        activeTaskRef.current.controlIncorrectTapCount += 1;
+        return;
+      }
+
+      if (eventName === 'drone_opened_fpv_from_map') {
+        activeTaskRef.current.controlDroneTapCount += 1;
+        activeTaskRef.current.controlIncorrectTapCount += 1;
+        return;
+      }
+
+      if (eventName === 'poi_tapped' && details.poiType !== 'target') {
+        activeTaskRef.current.controlNonTargetTapCount += 1;
+        activeTaskRef.current.controlIncorrectTapCount += 1;
+      }
+    },
+    [bumpInteractionCount, trackEvent]
+  );
+
+  const handleMapCameraChange = useCallback((camera: MapCameraState) => {
+    setMapCamera(camera);
+  }, []);
+
+  const handleAcknowledgeMinimapStatus = useCallback(() => {
+    if (!minimapStatusSignalVisible || minimapStatusAppearedAt === null) {
+      return;
+    }
+    const now = Date.now();
+    const responseMs = now - minimapStatusAppearedAt;
+    setMinimapStatusSignalVisible(false);
+    setMinimapStatusAppearedAt(null);
+    bumpInteractionCount();
+    trackEvent('minimap_status_acknowledged', {
+      signalId: minimapStatusId,
+      responseMs,
+    });
+    if (activeTaskRef.current?.module === 'minimap') {
+      activeTaskRef.current.minimapAckTimesMs.push(responseMs);
+    }
+  }, [
+    bumpInteractionCount,
+    minimapStatusAppearedAt,
+    minimapStatusId,
+    minimapStatusSignalVisible,
+    trackEvent,
+  ]);
 
   const handleSwitchToMapView = () => {
     setViewMode('MAP');
+    bumpInteractionCount();
+    trackEvent('view_changed', { to: 'MAP' });
   };
 
   const handleSwitchToFPVView = (droneId: string) => {
     setSelectedDroneId(droneId);
     setViewMode('FPV');
+    setAlertFocusRequest(null);
+    bumpInteractionCount();
+    trackEvent('view_changed', { to: 'FPV', droneId });
   };
 
   const handleToggleAlert = (alertId: number) => {
-    setExpandedAlert(expandedAlert === alertId ? null : alertId);
+    const isExpanded = expandedAlert === alertId;
+    setExpandedAlert(isExpanded ? null : alertId);
+    bumpInteractionCount();
+    trackEvent(isExpanded ? 'alert_collapsed' : 'alert_expanded', { alertId });
   };
 
   const handleDismissAlert = (alertId: number) => {
-    setAlerts(prev => prev.filter(a => a.id !== alertId));
+    const matchingAlert = alerts.find((alert) => alert.id === alertId);
+    setAlerts((prev) => prev.filter((alert) => alert.id !== alertId));
     if (expandedAlert === alertId) {
       setExpandedAlert(null);
     }
+    bumpInteractionCount();
+
+    const responseMs =
+      matchingAlert?.createdAt !== undefined ? Date.now() - matchingAlert.createdAt : null;
+    if (activeTaskRef.current?.module === 'alerts' && responseMs !== null) {
+      activeTaskRef.current.alertResponseTimesMs.push(responseMs);
+    }
+
+    trackEvent('alert_dismissed', { alertId, responseMs });
   };
 
   const handleGoToAlert = (alert: Alert) => {
-    console.log('Go to alert:', alert);
-    // This would navigate to the alert location in a real implementation
+    const responseMs =
+      alert.createdAt !== undefined ? Date.now() - alert.createdAt : null;
+    const focusX = alert.mapX ?? 75;
+    const focusY = alert.mapY ?? 55;
+    alertFocusRequestIdRef.current += 1;
+
+    setReturnContext({
+      viewMode,
+      droneId: selectedDroneId,
+      alertId: alert.id,
+      jumpedAt: Date.now(),
+      mapCameraBeforeJump: viewMode === 'MAP' ? mapCamera : null,
+    });
+    setAlertFocusRequest({
+      requestId: alertFocusRequestIdRef.current,
+      alertId: alert.id,
+      x: focusX,
+      y: focusY,
+      zoom: 1.65,
+    });
+    setCameraRestoreRequest(null);
+    setViewMode('MAP');
+    bumpInteractionCount();
+    if (activeTaskRef.current?.module === 'alerts' && responseMs !== null) {
+      activeTaskRef.current.alertResponseTimesMs.push(responseMs);
+    }
+    trackEvent('alert_jump_to_event', {
+      alertId: alert.id,
+      fromView: viewMode,
+      responseMs,
+      locationLabel: alert.locationLabel ?? null,
+      focusX,
+      focusY,
+    });
   };
 
-  const selectedDrone = allDrones.find(d => d.id === selectedDroneId) || allDrones.find(d => d.groupId === selectedGroup) || allDrones[0];
+  const handleQuickBack = () => {
+    if (!returnContext) return;
+
+    if (returnContext.viewMode === 'MAP' && returnContext.mapCameraBeforeJump) {
+      cameraRestoreRequestIdRef.current += 1;
+      setCameraRestoreRequest({
+        requestId: cameraRestoreRequestIdRef.current,
+        pan: returnContext.mapCameraBeforeJump.pan,
+        zoom: returnContext.mapCameraBeforeJump.zoom,
+      });
+    }
+    setAlertFocusRequest(null);
+
+    setSelectedDroneId(returnContext.droneId);
+    setViewMode(returnContext.viewMode);
+    bumpInteractionCount();
+    trackEvent('alert_quick_back', {
+      alertId: returnContext.alertId,
+      responseMs: Date.now() - returnContext.jumpedAt,
+      restoredMapCamera: returnContext.viewMode === 'MAP',
+    });
+    setReturnContext(null);
+  };
+
+  const handleStartTask = () => {
+    resetModuleScenario('task_start');
+    setLastTaskSummary(null);
+
+    if (studyModule === 'control-groups') {
+      setViewMode('MAP');
+      setControlTaskActiveGroupId(1);
+      setSelectedGroup(1);
+      const resetGroups = buildInitialControlGroups();
+      if (resetGroups[1].length > 0) {
+        setSelectedDroneId(resetGroups[1][0]);
+      }
+    }
+
+    const startedAt = Date.now();
+    const taskId = `${studyModule}-${studyCondition}-${startedAt}`;
+    activeTaskRef.current = {
+      taskId,
+      module: studyModule,
+      condition: studyCondition,
+      startedAt,
+      interactionCount: 0,
+      wrongTargetAssignments: 0,
+      correctTargetAssignments: 0,
+      controlIncorrectTapCount: 0,
+      controlNonTargetTapCount: 0,
+      controlDroneTapCount: 0,
+      controlBackgroundTapCount: 0,
+      controlRoleSwitchCount: 0,
+      alertResponseTimesMs: [],
+      minimapAckTimesMs: [],
+      distanceSamples: 0,
+      nearestDistanceKm: null,
+      farthestDistanceKm: null,
+      overshootCount: 0,
+      previousDistanceKm: null,
+    };
+    setTaskStartAt(startedAt);
+    trackEvent('task_started', {
+      module: studyModule,
+      condition: studyCondition,
+      taskId,
+      activeAlertBatchId: alertBatchId,
+    });
+  };
+
+  const finishTask = (outcome: 'complete' | 'fail') => {
+    const finishedAt = Date.now();
+    const activeTask = activeTaskRef.current;
+    const durationMs = taskStartAt ? finishedAt - taskStartAt : null;
+    const controlAssignmentSummary = controlTargetGoals.map((goal) => {
+      const assignedTargetId = groupTargetAssignments[goal.groupId] ?? null;
+      return {
+        groupId: goal.groupId,
+        label: goal.label,
+        expectedTargetId: goal.targetId,
+        expectedTargetName: goal.targetName,
+        assignedTargetId,
+        isCorrect: assignedTargetId === goal.targetId,
+      };
+    });
+    const controlCorrectCount = controlAssignmentSummary.filter((item) => item.isCorrect).length;
+    const controlWrongCount = controlAssignmentSummary.filter(
+      (item) => item.assignedTargetId !== null && !item.isCorrect
+    ).length;
+
+    trackEvent(outcome === 'complete' ? 'task_completed' : 'task_failed', {
+      module: studyModule,
+      condition: studyCondition,
+      durationMs,
+      alertRemainingCount: alerts.length,
+      controlCorrectCount,
+      controlWrongCount,
+      latestDistanceToTargetKm,
+      minimapSignalVisibleAtEnd: minimapStatusSignalVisible,
+    });
+
+    if (activeTask) {
+      trackEvent('task_metrics_summary', {
+        taskId: activeTask.taskId,
+        module: activeTask.module,
+        condition: activeTask.condition,
+        durationMs: finishedAt - activeTask.startedAt,
+        interactionCount: activeTask.interactionCount,
+        wrongTargetAssignments: activeTask.wrongTargetAssignments,
+        correctTargetAssignments: activeTask.correctTargetAssignments,
+        controlIncorrectTapCount: activeTask.controlIncorrectTapCount,
+        controlNonTargetTapCount: activeTask.controlNonTargetTapCount,
+        controlDroneTapCount: activeTask.controlDroneTapCount,
+        controlBackgroundTapCount: activeTask.controlBackgroundTapCount,
+        controlRoleSwitchCount: activeTask.controlRoleSwitchCount,
+        alertsHandled: activeTask.alertResponseTimesMs.length,
+        alertResponseTimesMs: activeTask.alertResponseTimesMs,
+        alertResponseAvgMs:
+          activeTask.alertResponseTimesMs.length > 0
+            ? Math.round(
+                activeTask.alertResponseTimesMs.reduce((sum, value) => sum + value, 0) /
+                  activeTask.alertResponseTimesMs.length
+              )
+            : null,
+        minimapAckTimesMs: activeTask.minimapAckTimesMs,
+        minimapAckAvgMs:
+          activeTask.minimapAckTimesMs.length > 0
+            ? Math.round(
+                activeTask.minimapAckTimesMs.reduce((sum, value) => sum + value, 0) /
+                  activeTask.minimapAckTimesMs.length
+              )
+            : null,
+        distanceSamples: activeTask.distanceSamples,
+        nearestDistanceKm: activeTask.nearestDistanceKm,
+        farthestDistanceKm: activeTask.farthestDistanceKm,
+        overshootCount: activeTask.overshootCount,
+        controlAssignments: controlAssignmentSummary,
+      });
+
+      setLastTaskSummary({
+        module: activeTask.module,
+        condition: activeTask.condition,
+        outcome,
+        durationMs,
+        interactions: activeTask.interactionCount,
+        controlCorrectCount,
+        controlWrongCount,
+        controlIncorrectTapCount: activeTask.controlIncorrectTapCount,
+        alertsHandled: activeTask.alertResponseTimesMs.length,
+        minimapAcks: activeTask.minimapAckTimesMs.length,
+        timestamp: finishedAt,
+      });
+    }
+
+    if (studyModule === 'minimap') {
+      clearMinimapStatusTimer();
+    }
+
+    activeTaskRef.current = null;
+    setTaskStartAt(null);
+  };
+
+  const handleSubmitWorkload = (scores: {
+    mental: number;
+    physical: number;
+    temporal: number;
+    performance: number;
+    effort: number;
+    frustration: number;
+    clarity: number;
+  }) => {
+    bumpInteractionCount();
+    trackEvent('workload_submitted', scores);
+  };
+
+  const handleExportJson = () => {
+    downloadTextFile(
+      `${sessionId}-${participantId || 'participant'}-events.json`,
+      JSON.stringify(eventLog, null, 2),
+      'application/json'
+    );
+  };
+
+  const handleExportCsv = () => {
+    downloadTextFile(
+      `${sessionId}-${participantId || 'participant'}-events.csv`,
+      eventsToCsv(eventLog),
+      'text/csv;charset=utf-8'
+    );
+  };
+
+  const handleModuleChange = (nextModule: StudyModule) => {
+    setStudyModule(nextModule);
+    setTaskStartAt(null);
+    activeTaskRef.current = null;
+    setIsGroupEditMode(false);
+    setControlTaskActiveGroupId(1);
+    setReturnContext(null);
+    setAlertFocusRequest(null);
+    setCameraRestoreRequest(null);
+    setMinimapStatusSignalVisible(false);
+    clearMinimapStatusTimer();
+    trackEvent('study_module_changed', { from: studyModule, to: nextModule });
+  };
+
+  const handleConditionChange = (nextCondition: 'A' | 'B') => {
+    setStudyCondition(nextCondition);
+    trackEvent('study_condition_changed', { from: studyCondition, to: nextCondition });
+  };
+
+  const controlAssignmentRows = controlTargetGoals.map((goal) => {
+    const assignedTargetId = groupTargetAssignments[goal.groupId] ?? null;
+    const assignedTargetName =
+      assignedTargetId === '4'
+        ? 'Target Alpha'
+        : assignedTargetId === '6'
+          ? 'Target Bravo'
+          : assignedTargetId === '7'
+            ? 'Target Charlie'
+            : null;
+    return {
+      groupId: goal.groupId,
+      label: goal.label,
+      expectedTargetName: goal.targetName,
+      assignedTargetName,
+      isCorrect: assignedTargetId === goal.targetId,
+    };
+  });
+
+  const controlCorrectCount = controlAssignmentRows.filter((row) => row.isCorrect).length;
+  const controlAssignedCount = controlAssignmentRows.filter(
+    (row) => row.assignedTargetName !== null
+  ).length;
+  const activeControlGoal =
+    controlAssignmentRows.find((row) => row.groupId === controlTaskActiveGroupId) ||
+    controlAssignmentRows[0];
+  const taskProgressLabel =
+    studyModule === 'control-groups'
+      ? `${controlCorrectCount}/3 correct target assignments (${controlAssignedCount}/3 assigned) | Active role: ${activeControlGoal?.label ?? 'Recon'} (G${controlTaskActiveGroupId})`
+      : studyModule === 'alerts'
+        ? `${alerts.length} active alert${alerts.length === 1 ? '' : 's'} remaining`
+        : minimapStatusSignalVisible
+          ? 'Red status icon is visible. Participant should acknowledge it now.'
+          : 'Waiting for red-status event or already acknowledged.';
+
+  const participantPrompt =
+    studyModule === 'control-groups'
+      ? 'Tap a role row (Recon/Relay/Delivery), then tap its matching target marker (Alpha/Bravo/Charlie) as quickly and accurately as possible.'
+      : studyModule === 'alerts'
+        ? 'Respond to each alert: acknowledge it, inspect/handle it, then return to your previous context.'
+        : 'Navigate to markers while monitoring for a red-status icon and acknowledge it immediately when seen.';
+
+  const recordingIssues: string[] = [];
+  if (participantId.trim().length === 0) {
+    recordingIssues.push('Participant ID is empty.');
+  }
+  if (eventLog.length === 0) {
+    recordingIssues.push('No telemetry events logged yet.');
+  }
+  if (studyModule === 'control-groups' && viewMode !== 'MAP') {
+    recordingIssues.push('Control task is most reliable in MAP view.');
+  }
+  if (studyModule === 'alerts' && !isTaskActive && alerts.length === 0) {
+    recordingIssues.push('No active alerts. Reset scenario before next alert run.');
+  }
+
+  const lastTaskSummaryText = lastTaskSummary
+    ? `${new Date(lastTaskSummary.timestamp).toLocaleTimeString()} | ${lastTaskSummary.module} ${lastTaskSummary.condition} | ${lastTaskSummary.outcome.toUpperCase()} | ${lastTaskSummary.durationMs === null ? '--' : `${Math.round(lastTaskSummary.durationMs / 1000)}s`} | interactions ${lastTaskSummary.interactions}${lastTaskSummary.module === 'control-groups' ? ` | incorrect taps ${lastTaskSummary.controlIncorrectTapCount}` : ''}`
+    : 'No completed task this session yet.';
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-black">
+      <StudyControlPanel
+        sessionId={sessionId}
+        participantId={participantId}
+        module={studyModule}
+        condition={studyCondition}
+        alertBatchId={alertBatchId}
+        eventCount={eventLog.length}
+        isTaskActive={taskStartAt !== null}
+        isGroupEditMode={isGroupEditMode}
+        latestDistanceToTargetKm={latestDistanceToTargetKm}
+        minimapStatusVisible={minimapStatusSignalVisible}
+        controlAssignmentRows={controlAssignmentRows}
+        taskProgressLabel={taskProgressLabel}
+        participantPrompt={participantPrompt}
+        recordingIssues={recordingIssues}
+        lastTaskSummaryText={lastTaskSummaryText}
+        onParticipantIdChange={setParticipantId}
+        onModuleChange={handleModuleChange}
+        onConditionChange={handleConditionChange}
+        onStartTask={handleStartTask}
+        onCompleteTask={() => finishTask('complete')}
+        onFailTask={() => finishTask('fail')}
+        onResetScenario={() => resetModuleScenario('manual')}
+        onTriggerMinimapStatus={() => scheduleMinimapStatusSignal('manual')}
+        onSubmitWorkload={handleSubmitWorkload}
+        onExportJson={handleExportJson}
+        onExportCsv={handleExportCsv}
+        onExitGroupEditMode={handleExitGroupEditMode}
+      />
+
       {viewMode === 'FPV' ? (
         <>
           {/* Background FPV view */}
-          <div 
+          <div
             className="absolute inset-0 bg-cover bg-center"
             style={{
               backgroundImage: `url('${selectedDrone.fpvView}')`
             }}
           />
-          
+
           {/* Vignette effect */}
           <div className="absolute inset-0 bg-gradient-radial from-transparent via-transparent to-black/50" />
-          
+
           {/* HUD Overlay */}
-          <DroneHUD 
+          <DroneHUD
             selectedDroneId={selectedDroneId}
-            onSwitchMainView={setSelectedDroneId}
+            onSwitchMainView={(droneId) => handleSelectDrone(droneId, 'hud_switch')}
             selectedGroup={selectedGroup}
-            groupDrones={getGroupDrones(selectedGroup)}
+            groupDrones={selectedGroupDrones}
             allDrones={allDrones}
             onSwitchToMapView={handleSwitchToMapView}
             alerts={alerts}
             expandedAlert={expandedAlert}
             onToggleAlert={handleToggleAlert}
             onDismissAlert={handleDismissAlert}
-            onGoToAlert={handleGoToAlert}
+            onGoToAlert={isAlertJumpEnabled ? handleGoToAlert : undefined}
           />
         </>
       ) : (
-        <MapViewUI 
+        <MapViewUI
           selectedGroup={selectedGroup}
           selectedDroneId={selectedDroneId}
-          onSelectDrone={setSelectedDroneId}
-          onGroupChange={setSelectedGroup}
-          groupDrones={getGroupDrones(selectedGroup)}
+          onSelectDrone={(droneId) => handleSelectDrone(droneId, 'map_or_panel')}
+          onGroupChange={handleGroupChange}
+          onEnterGroupEditMode={handleEnterGroupEditMode}
+          onExitGroupEditMode={handleExitGroupEditMode}
+          isGroupEditMode={isGroupEditMode}
+          groupDrones={selectedGroupDrones}
+          selectedGroupDroneIds={selectedGroupDroneIds}
           allDrones={allDrones}
           onSwitchToFPVView={handleSwitchToFPVView}
+          onToggleDroneInSelectedGroup={handleToggleDroneInSelectedGroup}
+          onAddDronesToSelectedGroup={handleAddDronesToSelectedGroup}
+          onAssignSelectedGroupToTarget={handleAssignSelectedGroupToTarget}
+          assignedTargetsByGroup={groupTargetAssignments}
+          showControlTaskOverlay={studyModule === 'control-groups'}
+          activeControlTaskGroupId={controlTaskActiveGroupId}
+          controlTaskRows={controlAssignmentRows}
+          onSelectControlTaskGroup={handleSelectControlTaskGroup}
+          onDistanceToTargetChange={handleDistanceToTargetChange}
+          mapRotationDeg={mapRotationDeg}
+          onMapInteraction={handleMapInteraction}
+          alertFocusRequest={alertFocusRequest}
+          cameraRestoreRequest={cameraRestoreRequest}
+          onMapCameraChange={handleMapCameraChange}
+          minimapStatusVisible={studyModule === 'minimap' && minimapStatusSignalVisible}
+          onAcknowledgeMinimapStatus={handleAcknowledgeMinimapStatus}
           alerts={alerts}
           expandedAlert={expandedAlert}
           onToggleAlert={handleToggleAlert}
           onDismissAlert={handleDismissAlert}
-          onGoToAlert={handleGoToAlert}
+          onGoToAlert={isAlertJumpEnabled ? handleGoToAlert : undefined}
         />
+      )}
+
+      {viewMode === 'MAP' && returnContext && isAlertJumpEnabled && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[70] pointer-events-auto">
+          <button
+            className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm border border-white/20"
+            onClick={handleQuickBack}
+          >
+            Quick Back to Previous View
+          </button>
+        </div>
       )}
     </div>
   );

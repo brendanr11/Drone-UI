@@ -7,6 +7,12 @@ export interface Alert {
   message: string;
   time: string;
   details?: string;
+  mapX?: number;
+  mapY?: number;
+  locationLabel?: string;
+  createdAt?: number;
+  batchId?: number;
+  templateId?: string;
 }
 
 interface AlertsPanelProps {
@@ -65,15 +71,17 @@ export function AlertsPanel({
                     <div className="mt-1.5 pt-1.5 border-t border-white/20 text-xs text-white/80">
                       <div className="text-xs mb-1.5">{alert.details}</div>
                       <div className="flex gap-1.5">
-                        <Button 
-                          className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onGoToAlert?.(alert);
-                          }}
-                        >
-                          Go to Alert
-                        </Button>
+                        {onGoToAlert && (
+                          <Button 
+                            className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onGoToAlert(alert);
+                            }}
+                          >
+                            Go to Alert
+                          </Button>
+                        )}
                         <Button 
                           className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
                           onClick={(e) => handleDismissAlert(alert.id, e)}

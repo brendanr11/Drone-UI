@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Battery, Signal, Maximize2, Minimize2, AlertCircle, CheckCircle, AlertTriangle } from 'lucide-react';
 import { Button } from './ui/button';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Drone } from '../App';
 import type { Alert } from './AlertsPanel';
 
@@ -54,10 +54,18 @@ export function DroneHUD({
 }: DroneHUDProps) {
   const [currentDrone, setCurrentDrone] = useState(selectedDroneId);
   const [isFullMapView, setIsFullMapView] = useState(false);
+  const fallbackDrone = allDrones.find((drone) => drone.id === selectedDroneId) || allDrones[0];
+  const safeGroupDrones = groupDrones.length > 0 ? groupDrones : [fallbackDrone];
 
   // Get stats from actual drones
-  const currentDroneData = groupDrones.find(d => d.id === currentDrone) || groupDrones[0];
-  const mainDroneData = groupDrones.find(d => d.id === selectedDroneId) || groupDrones[0];
+  const currentDroneData = safeGroupDrones.find(d => d.id === currentDrone) || safeGroupDrones[0];
+  const mainDroneData = allDrones.find(d => d.id === selectedDroneId) || safeGroupDrones[0];
+
+  useEffect(() => {
+    if (!safeGroupDrones.some((drone) => drone.id === currentDrone)) {
+      setCurrentDrone(safeGroupDrones[0].id);
+    }
+  }, [currentDrone, safeGroupDrones]);
 
   const currentStats = {
     speed: currentDroneData.speed,
@@ -85,15 +93,19 @@ export function DroneHUD({
   };
 
   const nextDrone = () => {
-    const currentIndex = groupDrones.findIndex(d => d.id === currentDrone);
-    const nextIndex = (currentIndex + 1) % groupDrones.length;
-    setCurrentDrone(groupDrones[nextIndex].id);
+    if (safeGroupDrones.length === 0) return;
+    const currentIndex = safeGroupDrones.findIndex(d => d.id === currentDrone);
+    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = (safeIndex + 1) % safeGroupDrones.length;
+    setCurrentDrone(safeGroupDrones[nextIndex].id);
   };
 
   const prevDrone = () => {
-    const currentIndex = groupDrones.findIndex(d => d.id === currentDrone);
-    const prevIndex = currentIndex === 0 ? groupDrones.length - 1 : currentIndex - 1;
-    setCurrentDrone(groupDrones[prevIndex].id);
+    if (safeGroupDrones.length === 0) return;
+    const currentIndex = safeGroupDrones.findIndex(d => d.id === currentDrone);
+    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+    const prevIndex = safeIndex === 0 ? safeGroupDrones.length - 1 : safeIndex - 1;
+    setCurrentDrone(safeGroupDrones[prevIndex].id);
   };
 
   const handleSwitchToThisDrone = () => {
@@ -147,7 +159,10 @@ export function DroneHUD({
               <Maximize2 className="w-3 h-3" />
             </Button>
           </div>
-          <div className="relative w-full h-32 rounded overflow-hidden border border-white/30">
+          <div
+            className="relative w-full h-32 rounded overflow-hidden border border-white/30 cursor-pointer hover:border-cyan-300/70 transition-colors"
+            onClick={() => onSwitchToMapView()}
+          >
             <img 
               src="https://images.unsplash.com/photo-1517917635448-93c0dc320860?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxzYXRlbGxpdGUlMjBtYXAlMjB0ZXJyYWlufGVufDF8fHx8MTc2MjcyMjQ4OHww&ixlib=rb-4.1.0&q=80&w=1080"
               alt="Map view"
@@ -169,6 +184,9 @@ export function DroneHUD({
               <div className="absolute top-[40%] left-[65%]">
                 <div className="w-1.5 h-1.5 bg-green-500 rounded-full border border-white" />
               </div>
+            </div>
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-cyan-500/70 px-2 py-0.5 rounded text-[10px] text-white border border-cyan-200/40">
+              Tap Map to Open
             </div>
           </div>
         </div>
@@ -193,7 +211,7 @@ export function DroneHUD({
                   onClick={handleSwitchToThisDrone}
                 >
                   <img 
-                    src={groupDrones.find(drone => drone.id === currentDrone)?.fpvView}
+                    src={safeGroupDrones.find(drone => drone.id === currentDrone)?.fpvView}
                     alt={`Drone ${currentDrone} FPV view`}
                     className="w-full h-full object-cover"
                   />
@@ -306,15 +324,17 @@ export function DroneHUD({
                         <div className="mt-1.5 pt-1.5 border-t border-white/20 text-xs text-white/80">
                           <div className="text-xs mb-1.5">{alert.details}</div>
                           <div className="flex gap-1.5">
-                            <Button 
-                              className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onGoToAlert?.(alert);
-                              }}
-                            >
-                              Go to Alert
-                            </Button>
+                            {onGoToAlert && (
+                              <Button 
+                                className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onGoToAlert(alert);
+                                }}
+                              >
+                                Go to Alert
+                              </Button>
+                            )}
                             <Button 
                               className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
                               onClick={(e) => {
@@ -377,7 +397,7 @@ export function DroneHUD({
               </div>
             </div>
             
-            {[1, 2, 3, 4, 5].map((droneNum) => {
+            {safeGroupDrones.slice(0, 5).map((drone, index) => {
               const positions = [
                 { top: '30%', left: '40%' },
                 { top: '60%', left: '70%' },
@@ -386,17 +406,17 @@ export function DroneHUD({
                 { top: '70%', left: '45%' },
               ];
               return (
-                <div key={droneNum} className={`absolute`} style={positions[droneNum - 1]}>
+                <div key={drone.id} className="absolute" style={positions[index]}>
                   <button
                     onClick={() => {
-                      setCurrentDrone(droneNum);
+                      setCurrentDrone(drone.id);
                       setIsFullMapView(false);
                     }}
                     className="relative hover:scale-110 transition-transform"
                   >
                     <div className="w-5 h-5 bg-green-500 rounded-full border-2 border-white" />
                     <div className="absolute -top-7 left-1/2 -translate-x-1/2 text-white text-xs whitespace-nowrap bg-black/60 px-2 py-1 rounded">
-                      Drone {droneNum}
+                      Drone {drone.id}
                     </div>
                   </button>
                 </div>
