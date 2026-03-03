@@ -120,18 +120,18 @@ export function StudyControlPanel({
     <div className="absolute top-0 right-0 z-[90] pointer-events-none">
       {isCollapsed ? (
         <button
-          className="pointer-events-auto h-10 w-10 rounded-none rounded-bl-lg border border-cyan-300/60 bg-black/80 text-[10px] font-semibold text-cyan-200 tracking-wide shadow-[0_0_16px_rgba(34,211,238,0.25)]"
+          className="pointer-events-auto h-10 w-[88px] rounded-none rounded-bl-lg border border-cyan-300/60 bg-black/80 px-1 text-[9px] font-semibold leading-tight text-cyan-200 tracking-wide shadow-[0_0_16px_rgba(34,211,238,0.25)]"
           onClick={() => setIsCollapsed(false)}
           title="Open study controls"
           aria-label="Open study controls"
         >
-          OPS
+          STUDY CONTROLS
         </button>
       ) : (
         <div className="pointer-events-auto mt-2 mr-2 w-[318px] max-h-[calc(100vh-1rem)] overflow-y-auto rounded-md border border-cyan-300/35 bg-gradient-to-b from-slate-950/95 via-black/90 to-slate-900/95 text-[11px] text-slate-100 shadow-[0_0_28px_rgba(56,189,248,0.16)]">
           <div className="flex items-center justify-between border-b border-cyan-300/20 px-3 py-2">
             <div>
-              <div className="text-[10px] tracking-[0.18em] text-cyan-300/80">STUDY OPS</div>
+              <div className="text-[10px] tracking-[0.18em] text-cyan-300/80">STUDY CONTROLS</div>
               <div className="text-[10px] text-slate-300">{isTaskActive ? 'Task Running' : 'Idle'}</div>
             </div>
             <div className="flex items-center gap-1">
