@@ -4,7 +4,7 @@ import { MapViewUI } from './components/MapViewUI';
 import type { Alert } from './components/AlertsPanel';
 import { StudyControlPanel, type StudyModule } from './components/StudyControlPanel';
 import { downloadTextFile, eventsToCsv, type TelemetryEvent } from './lib/telemetry';
-import { droneMapPositions } from './components/mapData';
+import { droneMapPositions, initialPOIs } from './components/mapData';
 
 // Combined drone data structure
 export interface Drone {
@@ -195,6 +195,18 @@ const buildInitialControlGroups = (): ControlGroups => {
   return groups;
 };
 
+function generateClusterOffsets(count: number): Array<{ x: number; y: number }> {
+  if (count === 0) return [];
+  if (count === 1) return [{ x: 0, y: 0 }];
+  const spacing = 3;
+  const cols = Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / cols);
+  return Array.from({ length: count }, (_, i) => ({
+    x: (i % cols - (cols - 1) / 2) * spacing,
+    y: (Math.floor(i / cols) - (rows - 1) / 2) * spacing,
+  }));
+}
+
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('FPV');
   const [selectedGroup, setSelectedGroup] = useState<GroupId>(1);
@@ -228,6 +240,10 @@ export default function App() {
   const [minimapStatusAppearedAt, setMinimapStatusAppearedAt] = useState<number | null>(null);
   const [minimapStatusId, setMinimapStatusId] = useState(0);
   const [scenarioResetCount, setScenarioResetCount] = useState(0);
+  const [dronePositions, setDronePositions] = useState<Record<string, { x: number; y: number }>>(() => ({ ...droneMapPositions }));
+  const [moveMode, setMoveMode] = useState<'idle' | 'drone' | 'group'>('idle');
+  const [movePending, setMovePending] = useState<{ x: number; y: number } | null>(null);
+  const [visitedAlertIds, setVisitedAlertIds] = useState<Set<number>>(new Set());
 
   const [sessionId] = useState(
     () => `session-${new Date().toISOString().replace(/[:.]/g, '-')}`
@@ -320,6 +336,9 @@ export default function App() {
           setSelectedDroneId(resetGroups[1][0]);
         }
         controlGoalsCompleteRef.current = false;
+        setDronePositions({ ...droneMapPositions });
+        setMoveMode('idle');
+        setMovePending(null);
         trackEvent('control_groups_scenario_reset', { reason });
         if (activeTaskRef.current?.module === 'control-groups') {
           activeTaskRef.current.correctTargetAssignments = 0;
@@ -340,6 +359,7 @@ export default function App() {
         setAlerts(nextAlerts);
         setExpandedAlert(null);
         setReturnContext(null);
+        setVisitedAlertIds(new Set());
         trackEvent('alert_batch_generated', {
           reason,
           batchId: nextBatchId,
@@ -783,6 +803,7 @@ export default function App() {
     const focusY = alert.mapY ?? 55;
     alertFocusRequestIdRef.current += 1;
 
+    setVisitedAlertIds((prev) => new Set([...prev, alert.id]));
     setReturnContext({
       viewMode,
       droneId: selectedDroneId,
@@ -836,6 +857,116 @@ export default function App() {
     });
     setReturnContext(null);
   };
+
+  // Condition B: mark an alert as visited when the map is panned near its location
+  useEffect(() => {
+    if (studyModule !== 'alerts' || isAlertJumpEnabled || viewMode !== 'MAP') return;
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const centerX = 50 - (mapCamera.pan.x / (mapCamera.zoom * 3 * W)) * 100;
+    const centerY = 50 - (mapCamera.pan.y / (mapCamera.zoom * 3 * H)) * 100;
+    const newVisits: number[] = [];
+    alerts.forEach((alert) => {
+      if (visitedAlertIds.has(alert.id)) return;
+      if (alert.mapX === undefined || alert.mapY === undefined) return;
+      if (Math.hypot(alert.mapX - centerX, alert.mapY - centerY) < 15) {
+        newVisits.push(alert.id);
+      }
+    });
+    if (newVisits.length === 0) return;
+    setVisitedAlertIds((prev) => new Set([...prev, ...newVisits]));
+    newVisits.forEach((id) => trackEvent('alert_location_visited_manual', { alertId: id }));
+  }, [mapCamera, alerts, isAlertJumpEnabled, studyModule, viewMode, visitedAlertIds, trackEvent]);
+
+  const handleEnterDroneMoveMode = useCallback(() => {
+    setMoveMode('drone');
+    setMovePending(null);
+    bumpInteractionCount();
+    trackEvent('move_mode_entered', { target: 'drone', droneId: selectedDroneId });
+  }, [bumpInteractionCount, selectedDroneId, trackEvent]);
+
+  const handleEnterGroupMoveMode = useCallback(() => {
+    setMoveMode('group');
+    setMovePending(null);
+    bumpInteractionCount();
+    trackEvent('move_mode_entered', { target: 'group', groupId: selectedGroup });
+  }, [bumpInteractionCount, selectedGroup, trackEvent]);
+
+  const handleMapMovePending = useCallback((x: number, y: number) => {
+    setMovePending({ x, y });
+  }, []);
+
+  const handleCancelMove = useCallback(() => {
+    setMovePending(null);
+    setMoveMode('idle');
+    trackEvent('move_cancelled', {});
+  }, [trackEvent]);
+
+  const handleConfirmMove = useCallback(() => {
+    if (!movePending) return;
+    const { x, y } = movePending;
+
+    if (moveMode === 'drone') {
+      setDronePositions((prev) => ({ ...prev, [selectedDroneId]: { x, y } }));
+      bumpInteractionCount();
+      trackEvent('drone_moved', { droneId: selectedDroneId, toX: x, toY: y });
+    } else if (moveMode === 'group') {
+      const groupDroneIds = controlGroups[selectedGroup] || [];
+      const offsets = generateClusterOffsets(groupDroneIds.length);
+      setDronePositions((prev) => {
+        const next = { ...prev };
+        groupDroneIds.forEach((droneId, i) => {
+          next[droneId] = {
+            x: Math.max(2, Math.min(98, x + (offsets[i]?.x ?? 0))),
+            y: Math.max(2, Math.min(98, y + (offsets[i]?.y ?? 0))),
+          };
+        });
+        return next;
+      });
+      bumpInteractionCount();
+      trackEvent('group_moved', { groupId: selectedGroup, droneCount: groupDroneIds.length, toX: x, toY: y });
+
+      // Proximity-based auto-assignment during control groups task
+      if (isControlTaskActive && (selectedGroup === 1 || selectedGroup === 2 || selectedGroup === 3)) {
+        const nearestTarget = initialPOIs
+          .filter((p) => p.type === 'target')
+          .reduce<{ id: string; name: string; dist: number } | null>((best, target) => {
+            const dist = Math.hypot(x - target.x, y - target.y);
+            return dist < 12 && (best === null || dist < best.dist)
+              ? { id: target.id, name: target.name, dist }
+              : best;
+          }, null);
+
+        if (nearestTarget) {
+          const goal = controlTargetGoals.find((g) => g.groupId === selectedGroup);
+          const isCorrect = goal?.targetId === nearestTarget.id;
+          setGroupTargetAssignments((prev) => {
+            const next = { ...prev, [selectedGroup as GroupId]: nearestTarget.id };
+            trackEvent('group_target_assigned', {
+              groupId: selectedGroup,
+              targetId: nearestTarget.id,
+              targetName: nearestTarget.name,
+              isCorrect,
+              method: 'proximity_move',
+            });
+            if (activeTaskRef.current?.module === 'control-groups') {
+              if (isCorrect) activeTaskRef.current.correctTargetAssignments += 1;
+              else activeTaskRef.current.wrongTargetAssignments += 1;
+            }
+            // Auto-advance to next unassigned goal
+            const nextGoal = controlTargetGoals.find((spec) => next[spec.groupId] !== spec.targetId);
+            if (nextGoal && nextGoal.groupId !== (selectedGroup as 1 | 2 | 3)) {
+              selectControlTaskGroup(nextGoal.groupId, 'auto_advance');
+            }
+            return next;
+          });
+        }
+      }
+    }
+
+    setMovePending(null);
+    setMoveMode('idle');
+  }, [bumpInteractionCount, controlGroups, isControlTaskActive, moveMode, movePending, selectedDroneId, selectedGroup, selectControlTaskGroup, trackEvent]);
 
   const handleStartTask = () => {
     resetModuleScenario('task_start');
@@ -1093,6 +1224,8 @@ export default function App() {
         alertBatchId={alertBatchId}
         eventCount={eventLog.length}
         isTaskActive={taskStartAt !== null}
+        taskStartedAt={taskStartAt}
+        completedTrials={eventLog.filter((e) => e.eventName === 'task_completed' || e.eventName === 'task_failed').length}
         isGroupEditMode={isGroupEditMode}
         latestDistanceToTargetKm={latestDistanceToTargetKm}
         minimapStatusVisible={minimapStatusSignalVisible}
@@ -1141,6 +1274,7 @@ export default function App() {
             onToggleAlert={handleToggleAlert}
             onDismissAlert={handleDismissAlert}
             onGoToAlert={isAlertJumpEnabled ? handleGoToAlert : undefined}
+            visitedAlertIds={studyModule === 'alerts' ? visitedAlertIds : undefined}
           />
         </>
       ) : (
@@ -1160,7 +1294,7 @@ export default function App() {
           onAddDronesToSelectedGroup={handleAddDronesToSelectedGroup}
           onAssignSelectedGroupToTarget={handleAssignSelectedGroupToTarget}
           assignedTargetsByGroup={groupTargetAssignments}
-          showControlTaskOverlay={studyModule === 'control-groups'}
+          showControlTaskOverlay={studyModule === 'control-groups' && isTaskActive}
           activeControlTaskGroupId={controlTaskActiveGroupId}
           controlTaskRows={controlAssignmentRows}
           onSelectControlTaskGroup={handleSelectControlTaskGroup}
@@ -1177,7 +1311,49 @@ export default function App() {
           onToggleAlert={handleToggleAlert}
           onDismissAlert={handleDismissAlert}
           onGoToAlert={isAlertJumpEnabled ? handleGoToAlert : undefined}
+          visitedAlertIds={studyModule === 'alerts' ? visitedAlertIds : undefined}
+          dronePositions={dronePositions}
+          moveMode={moveMode}
+          onMapMovePending={handleMapMovePending}
+          onEnterDroneMoveMode={handleEnterDroneMoveMode}
+          onEnterGroupMoveMode={isSavedGroupFeatureEnabled ? handleEnterGroupMoveMode : undefined}
+          onCancelMove={handleCancelMove}
+          isMoveGroupEnabled={isSavedGroupFeatureEnabled}
+          selectedDroneName={selectedDrone.name}
         />
+      )}
+
+      {/* Move confirmation overlay */}
+      {movePending && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center">
+          <div className="pointer-events-auto rounded-lg border border-cyan-300/60 bg-slate-900/95 p-5 shadow-2xl text-center w-72">
+            <div className="mb-1 text-[10px] uppercase tracking-widest text-cyan-400">Confirm Move</div>
+            <div className="mt-1 text-sm text-slate-100">
+              {moveMode === 'drone'
+                ? `Move ${selectedDrone.name} to this location?`
+                : `Move Group ${selectedGroup} (${controlGroups[selectedGroup]?.length ?? 0} drones) to this location?`}
+            </div>
+            {moveMode === 'group' && isControlTaskActive && (
+              <div className="mt-1 text-[10px] text-slate-400">
+                If near a target, the group will be auto-assigned.
+              </div>
+            )}
+            <div className="mt-3 flex gap-2 justify-center">
+              <button
+                className="rounded bg-cyan-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-cyan-700"
+                onClick={handleConfirmMove}
+              >
+                Move Here
+              </button>
+              <button
+                className="rounded bg-slate-700 px-4 py-1.5 text-sm text-white hover:bg-slate-600"
+                onClick={handleCancelMove}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {viewMode === 'MAP' && returnContext && isAlertJumpEnabled && (

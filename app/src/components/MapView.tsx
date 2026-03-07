@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MapPin } from 'lucide-react';
 import { WaypointDialog } from './WaypointDialog';
 import type { Drone } from '../App';
-import { droneMapPositions, initialPOIs, type POI } from './mapData';
+import { initialPOIs, type POI } from './mapData';
 
 interface MapViewProps {
   selectedGroup: 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -34,6 +34,9 @@ interface MapViewProps {
   } | null;
   onCameraChange?: (camera: { pan: { x: number; y: number }; zoom: number }) => void;
   minimalMode?: boolean;
+  dronePositions?: Record<string, { x: number; y: number }>;
+  moveMode?: 'idle' | 'drone' | 'group';
+  onMapMovePending?: (mapX: number, mapY: number) => void;
 }
 
 export function MapView({
@@ -55,7 +58,10 @@ export function MapView({
   alertFocusRequest = null,
   cameraRestoreRequest = null,
   onCameraChange,
-  minimalMode = false
+  minimalMode = false,
+  dronePositions = {},
+  moveMode = 'idle',
+  onMapMovePending,
 }: MapViewProps) {
   const [pois, setPois] = useState<POI[]>(initialPOIs);
   const [draggedPOI, setDraggedPOI] = useState<string | null>(null);
@@ -195,7 +201,7 @@ export function MapView({
     const selected = new Set<string>();
     
     allDrones.forEach(drone => {
-      const position = droneMapPositions[drone.id];
+      const position = dronePositions[drone.id];
       if (!position) return;
 
       // Convert drone position percentage to screen coordinates
@@ -367,7 +373,14 @@ export function MapView({
 
   const handleMapTouchEnd = () => {
     if (touchTapStartRef.current && !touchTapMovedRef.current) {
-      onMapInteraction?.('map_background_tapped', { input: 'touch' });
+      if (moveMode !== 'idle' && transformedMapRef.current) {
+        const rect = transformedMapRef.current.getBoundingClientRect();
+        const mapX = Math.max(2, Math.min(98, ((touchTapStartRef.current.x - rect.left) / rect.width) * 100));
+        const mapY = Math.max(2, Math.min(98, ((touchTapStartRef.current.y - rect.top) / rect.height) * 100));
+        onMapMovePending?.(mapX, mapY);
+      } else {
+        onMapInteraction?.('map_background_tapped', { input: 'touch' });
+      }
     }
     touchTapStartRef.current = null;
     touchTapMovedRef.current = false;
@@ -439,9 +452,16 @@ export function MapView({
     }
   };
 
-  const handleMapMouseUp = () => {
+  const handleMapMouseUp = (e: React.MouseEvent) => {
     if (mouseMode === 'pan' && !panMovedRef.current) {
-      onMapInteraction?.('map_background_tapped', { input: 'mouse' });
+      if (moveMode !== 'idle' && transformedMapRef.current) {
+        const rect = transformedMapRef.current.getBoundingClientRect();
+        const mapX = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
+        const mapY = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
+        onMapMovePending?.(mapX, mapY);
+      } else {
+        onMapInteraction?.('map_background_tapped', { input: 'mouse' });
+      }
     }
     completeInteraction();
   };
@@ -469,6 +489,12 @@ export function MapView({
       return;
     }
 
+    // In move mode, any map tap (including POIs) sets the destination
+    if (moveMode !== 'idle') {
+      onMapMovePending?.(poi.x, poi.y);
+      return;
+    }
+
     if (tapTimeoutRef.current) {
       clearTimeout(tapTimeoutRef.current);
       tapTimeoutRef.current = null;
@@ -490,6 +516,8 @@ export function MapView({
   // Drone touch handlers
   const handleDroneTap = (droneId: string, e: React.TouchEvent | React.MouseEvent) => {
     e.stopPropagation();
+    // In move mode, ignore drone taps (user is picking a map destination)
+    if (moveMode !== 'idle') return;
     // Clear box selection when tapping individual drone
     setBoxSelectedDrones(new Set());
     if (isGroupEditMode) {
@@ -498,8 +526,8 @@ export function MapView({
       return;
     }
 
-    onSwitchToFPVView(droneId);
-    onMapInteraction?.('drone_opened_fpv_from_map', { droneId, input: 'tap' });
+    onSelectDrone(droneId);
+    onMapInteraction?.('drone_selected_from_map', { droneId, input: 'tap' });
   };
 
   const handleWaypointSave = (name: string, lat: number, lng: number, type: POI['type']) => {
@@ -569,6 +597,7 @@ export function MapView({
   };
 
   const getCursorStyle = () => {
+    if (moveMode !== 'idle') return 'crosshair';
     if (mouseMode === 'pan' || isTwoFingerGesture || isDragging) return 'grabbing';
     if (draggedPOI) return 'move';
     if (mouseMode === 'box-select' || boxSelectStart) return 'crosshair';
@@ -800,7 +829,7 @@ export function MapView({
 
         {/* Drone Markers */}
         {allDrones.map(drone => {
-          const position = droneMapPositions[drone.id] || { x: 50, y: 50 };
+          const position = dronePositions[drone.id] || { x: 50, y: 50 };
           const isSelected = drone.id === selectedDroneId;
           const isBoxSelected = boxSelectedDrones.has(drone.id);
           const isInSelectedGroup = selectedGroupDroneSet.has(drone.id);
@@ -842,7 +871,7 @@ export function MapView({
                       <div><span className="text-slate-400">Battery:</span> {drone.battery}%</div>
                       <div><span className="text-slate-400">Altitude:</span> {drone.altitude}m</div>
                       <div><span className="text-slate-400">Speed:</span> {drone.speed} km/h</div>
-                      <div className="text-xs text-blue-400 mt-1">Tap to view FPV</div>
+                      <div className="text-xs text-blue-400 mt-1">Tap to select</div>
                     </div>
                   </div>
                 )}
@@ -876,12 +905,12 @@ export function MapView({
       )}
 
       {/* Map Controls Info */}
-      {!minimalMode && (
+      {!minimalMode && moveMode === 'idle' && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur-sm border border-slate-600/50 rounded px-4 py-2 text-slate-300 text-xs z-10">
           <div className="flex gap-6">
             <span>✌️ Two fingers to pan/zoom</span>
             <span>👆 Drag to box select</span>
-            <span>{isGroupEditMode ? '🧩 Tap to add/remove group members' : '🎯 Tap drones for FPV'}</span>
+            <span>{isGroupEditMode ? '🧩 Tap to add/remove group members' : '🎯 Tap drone to select'}</span>
           </div>
           <div className="mt-1 text-[10px] text-slate-400 text-center">
             Tap a target to assign selected group. Double tap marker to edit.

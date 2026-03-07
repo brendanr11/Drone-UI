@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export type StudyModule = 'control-groups' | 'alerts' | 'minimap';
 
@@ -20,6 +20,8 @@ interface StudyControlPanelProps {
   alertBatchId: number;
   eventCount: number;
   isTaskActive: boolean;
+  taskStartedAt: number | null;
+  completedTrials: number;
   isGroupEditMode: boolean;
   latestDistanceToTargetKm: number | null;
   minimapStatusVisible: boolean;
@@ -66,6 +68,8 @@ export function StudyControlPanel({
   alertBatchId,
   eventCount,
   isTaskActive,
+  taskStartedAt,
+  completedTrials,
   isGroupEditMode,
   latestDistanceToTargetKm,
   minimapStatusVisible,
@@ -90,6 +94,25 @@ export function StudyControlPanel({
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [panelMode, setPanelMode] = useState<'facilitator' | 'participant'>('facilitator');
   const [scores, setScores] = useState<WorkloadScores>(defaultScores);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [tlxSaved, setTlxSaved] = useState(false);
+
+  useEffect(() => {
+    if (!taskStartedAt) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const update = () => setElapsedSeconds(Math.floor((Date.now() - taskStartedAt) / 1000));
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [taskStartedAt]);
+
+  const formatElapsed = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}:${String(sec).padStart(2, '0')}`;
+  };
   const moduleChecklist =
     module === 'control-groups'
       ? 'Assign Recon/Relay/Delivery to Target Alpha/Bravo/Charlie.'
@@ -188,6 +211,10 @@ export function StudyControlPanel({
                 <div className="break-all font-mono text-[10px] text-slate-200">{sessionId}</div>
                 <div className="mt-1 text-[10px] text-slate-300">Events Logged: {eventCount}</div>
                 <div className="text-[10px] text-slate-300">Alert Batch: {alertBatchId}</div>
+                <div className="text-[10px] text-slate-300">Trials Completed: {completedTrials}</div>
+                <div className={`text-[10px] font-mono ${isTaskActive ? 'text-cyan-300' : 'text-slate-400'}`}>
+                  {isTaskActive ? `Task Running: ${formatElapsed(elapsedSeconds)}` : 'Task Idle'}
+                </div>
               </div>
 
               <label className="block">
@@ -211,7 +238,6 @@ export function StudyControlPanel({
                   >
                     <option value="control-groups">Control Groups</option>
                     <option value="alerts">Alerts</option>
-                    <option value="minimap">Minimap</option>
                   </select>
                 </label>
 
@@ -259,20 +285,46 @@ export function StudyControlPanel({
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  className="rounded border border-cyan-300/45 bg-cyan-500/20 px-2 py-1 font-medium text-cyan-100 hover:bg-cyan-500/35"
-                  onClick={onResetScenario}
-                >
-                  Reset Scenario
-                </button>
-                <button
-                  className="rounded border border-red-300/45 bg-red-500/20 px-2 py-1 font-medium text-red-100 hover:bg-red-500/35 disabled:cursor-not-allowed disabled:opacity-50"
-                  onClick={onTriggerMinimapStatus}
-                  disabled={module !== 'minimap'}
-                >
-                  Trigger Red Status
-                </button>
+              <button
+                className="w-full rounded border border-cyan-300/45 bg-cyan-500/20 px-2 py-1 font-medium text-cyan-100 hover:bg-cyan-500/35"
+                onClick={onResetScenario}
+              >
+                Reset Scenario
+              </button>
+
+              <div className="rounded border border-slate-700/70 bg-slate-900/45 p-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-300">Quick Setup — Study Steps</div>
+                <div className="grid grid-cols-4 gap-1">
+                  {(
+                    [
+                      { m: 'control-groups' as StudyModule, c: 'A' as 'A' | 'B', label: 'CG A', step: '1' },
+                      { m: 'control-groups' as StudyModule, c: 'B' as 'A' | 'B', label: 'CG B', step: '2' },
+                      { m: 'alerts' as StudyModule, c: 'A' as 'A' | 'B', label: 'ALR A', step: '3' },
+                      { m: 'alerts' as StudyModule, c: 'B' as 'A' | 'B', label: 'ALR B', step: '4' },
+                    ]
+                  ).map(({ m, c, label, step }) => {
+                    const isActive = module === m && condition === c;
+                    return (
+                      <button
+                        key={label}
+                        className={`rounded border px-1 py-1.5 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                          isActive
+                            ? 'border-cyan-300/80 bg-cyan-500/35 text-cyan-100'
+                            : 'border-slate-500/60 bg-slate-800/70 text-slate-300 hover:border-cyan-300/40 hover:text-cyan-200'
+                        }`}
+                        onClick={() => {
+                          onModuleChange(m);
+                          onConditionChange(c);
+                        }}
+                        disabled={isTaskActive}
+                        title={`Step ${step}: ${m === 'control-groups' ? 'Control Groups' : 'Alert Stack'} — Condition ${c}`}
+                      >
+                        <div className="text-[8px] opacity-60">Step {step}</div>
+                        <div>{label}</div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {isGroupEditMode && (
@@ -289,7 +341,6 @@ export function StudyControlPanel({
                 <div className="space-y-1 text-[10px] text-slate-200">
                   <div>{taskProgressLabel}</div>
                   <div>Distance to nearest target: {latestDistanceToTargetKm === null ? '--' : `${latestDistanceToTargetKm} km`}</div>
-                  <div>Minimap red status visible: {minimapStatusVisible ? 'Yes' : 'No'}</div>
                 </div>
               </div>
 
@@ -323,7 +374,8 @@ export function StudyControlPanel({
               )}
 
               <div className="rounded border border-slate-700/70 bg-slate-900/45 p-2">
-                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-300">NASA-TLX + Clarity</div>
+                <div className="mb-0.5 text-[10px] uppercase tracking-wide text-slate-300">NASA-TLX + Clarity</div>
+                <div className="mb-1.5 text-[9px] text-slate-500">All scales: 0 = low, 100 = high (except Performance)</div>
 
                 <div className="grid grid-cols-2 gap-1.5">
                   <label>
@@ -339,7 +391,8 @@ export function StudyControlPanel({
                     <input type="number" min={0} max={100} className={scoreInputClassName} value={scores.temporal} onChange={(e) => updateScore('temporal', Number(e.target.value))} />
                   </label>
                   <label>
-                    <div className="text-[10px] text-slate-300">Performance</div>
+                    <div className="text-[10px] text-amber-300">Performance ⚠</div>
+                    <div className="text-[9px] text-slate-500 mb-0.5">0=perfect · 100=failure</div>
                     <input type="number" min={0} max={100} className={scoreInputClassName} value={scores.performance} onChange={(e) => updateScore('performance', Number(e.target.value))} />
                   </label>
                   <label>
@@ -353,15 +406,20 @@ export function StudyControlPanel({
                 </div>
 
                 <label className="mt-1.5 block">
-                  <div className="text-[10px] text-slate-300">Clarity (0-10)</div>
+                  <div className="text-[10px] text-slate-300">Clarity (0=unclear · 10=very clear)</div>
                   <input type="number" min={0} max={10} className={scoreInputClassName} value={scores.clarity} onChange={(e) => updateScore('clarity', Number(e.target.value))} />
                 </label>
 
                 <button
-                  className="mt-1.5 w-full rounded border border-indigo-300/45 bg-indigo-500/25 px-2 py-1 font-medium text-indigo-100 hover:bg-indigo-500/35"
-                  onClick={() => onSubmitWorkload(scores)}
+                  className={`mt-1.5 w-full rounded border px-2 py-1 font-medium transition-colors ${tlxSaved ? 'border-emerald-300/60 bg-emerald-500/30 text-emerald-100' : 'border-indigo-300/45 bg-indigo-500/25 text-indigo-100 hover:bg-indigo-500/35'}`}
+                  onClick={() => {
+                    onSubmitWorkload(scores);
+                    setScores(defaultScores);
+                    setTlxSaved(true);
+                    setTimeout(() => setTlxSaved(false), 2000);
+                  }}
                 >
-                  Save TLX + Clarity
+                  {tlxSaved ? 'Saved! (scores reset)' : 'Save TLX + Clarity'}
                 </button>
               </div>
 

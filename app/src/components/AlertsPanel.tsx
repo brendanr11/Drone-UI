@@ -21,14 +21,16 @@ interface AlertsPanelProps {
   onToggleAlert: (alertId: number) => void;
   onDismissAlert: (alertId: number) => void;
   onGoToAlert?: (alert: Alert) => void;
+  visitedAlertIds?: Set<number>;
 }
 
-export function AlertsPanel({ 
-  alerts, 
-  expandedAlert, 
-  onToggleAlert, 
+export function AlertsPanel({
+  alerts,
+  expandedAlert,
+  onToggleAlert,
   onDismissAlert,
-  onGoToAlert 
+  onGoToAlert,
+  visitedAlertIds,
 }: AlertsPanelProps) {
 
   const getAlertIcon = (type: Alert['type']) => {
@@ -70,9 +72,9 @@ export function AlertsPanel({
                   {expandedAlert === alert.id && alert.details && (
                     <div className="mt-1.5 pt-1.5 border-t border-white/20 text-xs text-white/80">
                       <div className="text-xs mb-1.5">{alert.details}</div>
-                      <div className="flex gap-1.5">
+                      <div className="flex gap-1.5 flex-wrap items-start">
                         {onGoToAlert && (
-                          <Button 
+                          <Button
                             className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
                             onClick={(e) => {
                               e.stopPropagation();
@@ -82,12 +84,20 @@ export function AlertsPanel({
                             Go to Alert
                           </Button>
                         )}
-                        <Button 
-                          className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
-                          onClick={(e) => handleDismissAlert(alert.id, e)}
-                        >
-                          Dismiss
-                        </Button>
+                        <div className="flex flex-col gap-0.5">
+                          <Button
+                            className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                            onClick={(e) => handleDismissAlert(alert.id, e)}
+                            disabled={visitedAlertIds !== undefined && !visitedAlertIds.has(alert.id)}
+                          >
+                            Dismiss
+                          </Button>
+                          {visitedAlertIds !== undefined && !visitedAlertIds.has(alert.id) && (
+                            <span className="text-[9px] text-yellow-300/80 leading-tight pointer-events-none">
+                              {onGoToAlert ? 'Tap "Go to Alert" first' : 'Navigate here first'}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}

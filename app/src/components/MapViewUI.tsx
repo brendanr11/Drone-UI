@@ -57,6 +57,15 @@ interface MapViewUIProps {
     zoom: number;
   } | null;
   onMapCameraChange?: (camera: { pan: { x: number; y: number }; zoom: number }) => void;
+  dronePositions?: Record<string, { x: number; y: number }>;
+  moveMode?: 'idle' | 'drone' | 'group';
+  onMapMovePending?: (mapX: number, mapY: number) => void;
+  onEnterDroneMoveMode?: () => void;
+  onEnterGroupMoveMode?: () => void;
+  onCancelMove?: () => void;
+  isMoveGroupEnabled?: boolean;
+  visitedAlertIds?: Set<number>;
+  selectedDroneName?: string;
 }
 
 export function MapViewUI({
@@ -91,7 +100,16 @@ export function MapViewUI({
   onAcknowledgeMinimapStatus,
   alertFocusRequest = null,
   cameraRestoreRequest = null,
-  onMapCameraChange
+  onMapCameraChange,
+  dronePositions = {},
+  moveMode = 'idle',
+  onMapMovePending,
+  onEnterDroneMoveMode,
+  onEnterGroupMoveMode,
+  onCancelMove,
+  isMoveGroupEnabled = false,
+  visitedAlertIds,
+  selectedDroneName,
 }: MapViewUIProps) {
   const [pois, setPois] = useState<POI[]>(initialPOIs);
   const assignedGroupsByTarget = useMemo(() => {
@@ -162,7 +180,7 @@ export function MapViewUI({
 
   return (
     <div className="relative w-full h-screen bg-slate-900 overflow-hidden">
-      <MapView 
+      <MapView
         selectedGroup={selectedGroup}
         selectedDroneId={selectedDroneId}
         onSelectDrone={onSelectDrone}
@@ -181,6 +199,9 @@ export function MapViewUI({
         alertFocusRequest={alertFocusRequest}
         cameraRestoreRequest={cameraRestoreRequest}
         onCameraChange={onMapCameraChange}
+        dronePositions={dronePositions}
+        moveMode={moveMode}
+        onMapMovePending={onMapMovePending}
       />
       
       <div className="absolute top-4 left-4 z-10">
@@ -194,6 +215,17 @@ export function MapViewUI({
           rows={controlTaskRows}
           onSelectGroup={onSelectControlTaskGroup}
         />
+      )}
+
+      {/* Move mode instruction banner */}
+      {moveMode !== 'idle' && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+          <div className="rounded border border-cyan-300/70 bg-slate-900/90 px-4 py-2 text-xs text-cyan-200 text-center shadow-lg">
+            {moveMode === 'drone'
+              ? `Tap anywhere on the map to move ${selectedDroneName ?? 'the selected drone'}`
+              : `Tap anywhere on the map to move Group ${selectedGroup} (${groupDrones.length} drones)`}
+          </div>
+        </div>
       )}
 
       {minimapStatusVisible && (
@@ -217,7 +249,49 @@ export function MapViewUI({
       </div>
       
       <div className="absolute bottom-4 left-4 z-10">
-        <StatusPanel 
+        {/* Move buttons — shown above StatusPanel */}
+        {(onEnterDroneMoveMode || (isMoveGroupEnabled && onEnterGroupMoveMode)) && (
+          <div className="mb-1.5 flex gap-1.5">
+            {onEnterDroneMoveMode && (
+              <button
+                className={`rounded border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  moveMode === 'drone'
+                    ? 'border-cyan-300/80 bg-cyan-500/35 text-cyan-100'
+                    : 'border-slate-400/60 bg-black/60 text-slate-100 hover:border-cyan-300/50 hover:text-cyan-200'
+                }`}
+                onClick={onEnterDroneMoveMode}
+                disabled={moveMode !== 'idle' && moveMode !== 'drone'}
+                title="Move selected drone to a new location"
+              >
+                Move Drone
+              </button>
+            )}
+            {isMoveGroupEnabled && onEnterGroupMoveMode && (
+              <button
+                className={`rounded border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  moveMode === 'group'
+                    ? 'border-emerald-300/80 bg-emerald-500/35 text-emerald-100'
+                    : 'border-slate-400/60 bg-black/60 text-slate-100 hover:border-emerald-300/50 hover:text-emerald-200'
+                }`}
+                onClick={onEnterGroupMoveMode}
+                disabled={moveMode !== 'idle' && moveMode !== 'group'}
+                title={`Move all drones in Group ${selectedGroup} together`}
+              >
+                Move Group {selectedGroup}
+              </button>
+            )}
+            {moveMode !== 'idle' && onCancelMove && (
+              <button
+                className="rounded border border-red-400/60 bg-black/60 px-2.5 py-1 text-xs font-medium text-red-300 transition-colors hover:border-red-300/80 hover:text-red-200"
+                onClick={onCancelMove}
+                title="Cancel move"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        )}
+        <StatusPanel
           selectedGroup={selectedGroup}
           onGroupChange={onGroupChange}
           onEnterGroupEditMode={onEnterGroupEditMode}
@@ -231,12 +305,13 @@ export function MapViewUI({
       </div>
       
       <div className="absolute bottom-4 right-4 z-10">
-        <AlertsPanel 
+        <AlertsPanel
           alerts={alerts}
           expandedAlert={expandedAlert}
           onToggleAlert={onToggleAlert}
           onDismissAlert={onDismissAlert}
           onGoToAlert={onGoToAlert}
+          visitedAlertIds={visitedAlertIds}
         />
       </div>
     </div>

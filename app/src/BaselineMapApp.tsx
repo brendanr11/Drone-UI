@@ -90,6 +90,8 @@ export default function BaselineMapApp() {
         alertBatchId={0}
         eventCount={eventLog.length}
         isTaskActive={isTaskActive}
+        taskStartedAt={taskStartAt}
+        completedTrials={eventLog.filter((e) => e.eventName === 'task_completed' || e.eventName === 'task_failed').length}
         isGroupEditMode={false}
         latestDistanceToTargetKm={null}
         minimapStatusVisible={false}
@@ -140,7 +142,7 @@ export default function BaselineMapApp() {
           trackEvent('minimap_status_triggered_manual', { appVariant: 'baseline-map-only' });
         }}
         onSubmitWorkload={(scores) => {
-          trackEvent('workload_submitted', scores);
+          trackEvent('workload_submitted', scores as unknown as Record<string, unknown>);
         }}
         onExportJson={() =>
           downloadTextFile(

@@ -29,6 +29,7 @@ interface DroneHUDProps {
   onToggleAlert: (alertId: number) => void;
   onDismissAlert: (alertId: number) => void;
   onGoToAlert?: (alert: Alert) => void;
+  visitedAlertIds?: Set<number>;
 }
 
 interface DroneStats {
@@ -50,7 +51,8 @@ export function DroneHUD({
   expandedAlert,
   onToggleAlert,
   onDismissAlert,
-  onGoToAlert
+  onGoToAlert,
+  visitedAlertIds,
 }: DroneHUDProps) {
   const [currentDrone, setCurrentDrone] = useState(selectedDroneId);
   const [isFullMapView, setIsFullMapView] = useState(false);
@@ -335,15 +337,23 @@ export function DroneHUD({
                                 Go to Alert
                               </Button>
                             )}
-                            <Button 
-                              className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onDismissAlert(alert.id);
-                              }}
-                            >
-                              Dismiss
-                            </Button>
+                            <div className="flex flex-col gap-0.5">
+                              <Button
+                                className="h-6 text-xs bg-white/20 hover:bg-white/30 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDismissAlert(alert.id);
+                                }}
+                                disabled={visitedAlertIds !== undefined && !visitedAlertIds.has(alert.id)}
+                              >
+                                Dismiss
+                              </Button>
+                              {visitedAlertIds !== undefined && !visitedAlertIds.has(alert.id) && (
+                                <span className="text-[9px] text-yellow-300/80 leading-tight pointer-events-none">
+                                  {onGoToAlert ? 'Tap "Go to Alert" first' : 'Navigate here first'}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       )}
