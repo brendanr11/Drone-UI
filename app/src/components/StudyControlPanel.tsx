@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export type StudyModule = 'control-groups' | 'alerts' | 'minimap';
+export type StudyModule = 'control-groups' | 'alerts';
 
 interface WorkloadScores {
   mental: number;
@@ -24,7 +24,6 @@ interface StudyControlPanelProps {
   completedTrials: number;
   isGroupEditMode: boolean;
   latestDistanceToTargetKm: number | null;
-  minimapStatusVisible: boolean;
   controlAssignmentRows: Array<{
     groupId: number;
     label: string;
@@ -43,7 +42,6 @@ interface StudyControlPanelProps {
   onCompleteTask: () => void;
   onFailTask: () => void;
   onResetScenario: () => void;
-  onTriggerMinimapStatus: () => void;
   onSubmitWorkload: (scores: WorkloadScores) => void;
   onExportJson: () => void;
   onExportCsv: () => void;
@@ -72,7 +70,6 @@ export function StudyControlPanel({
   completedTrials,
   isGroupEditMode,
   latestDistanceToTargetKm,
-  minimapStatusVisible,
   controlAssignmentRows,
   taskProgressLabel,
   participantPrompt,
@@ -85,7 +82,6 @@ export function StudyControlPanel({
   onCompleteTask,
   onFailTask,
   onResetScenario,
-  onTriggerMinimapStatus,
   onSubmitWorkload,
   onExportJson,
   onExportCsv,
@@ -116,21 +112,15 @@ export function StudyControlPanel({
   const moduleChecklist =
     module === 'control-groups'
       ? 'Assign Recon/Relay/Delivery to Target Alpha/Bravo/Charlie.'
-      : module === 'alerts'
-        ? 'Acknowledge, jump/check, handle, and return for each alert.'
-        : 'Navigate markers and acknowledge red status when it appears.';
+      : 'Acknowledge, jump/check, handle, and return for each alert.';
   const conditionSummary =
     module === 'control-groups'
       ? condition === 'A'
         ? 'A: Saved control groups + multi-select enabled'
         : 'B: Baseline without saved control groups'
-      : module === 'alerts'
-        ? condition === 'A'
-          ? 'A: Stacked alerts + jump + quick-back'
-          : 'B: Simple alerts list (no jump/quick-back)'
-        : condition === 'A'
-          ? 'A: Fixed-north minimap'
-          : 'B: Rotating minimap';
+      : condition === 'A'
+        ? 'A: Stacked alerts + jump + quick-back'
+        : 'B: Simple alerts list (no jump/quick-back)';
   const recordingHealthy = recordingIssues.length === 0;
 
   const updateScore = (key: keyof WorkloadScores, value: number) => {

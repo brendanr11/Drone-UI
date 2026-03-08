@@ -94,7 +94,6 @@ export default function BaselineMapApp() {
         completedTrials={eventLog.filter((e) => e.eventName === 'task_completed' || e.eventName === 'task_failed').length}
         isGroupEditMode={false}
         latestDistanceToTargetKm={null}
-        minimapStatusVisible={false}
         controlAssignmentRows={[
           {
             groupId: 1,
@@ -137,9 +136,6 @@ export default function BaselineMapApp() {
         onResetScenario={() => {
           trackEvent('module_scenario_reset', { appVariant: 'baseline-map-only' });
           setLastTaskSummary('Scenario reset for baseline map-only run.');
-        }}
-        onTriggerMinimapStatus={() => {
-          trackEvent('minimap_status_triggered_manual', { appVariant: 'baseline-map-only' });
         }}
         onSubmitWorkload={(scores) => {
           trackEvent('workload_submitted', scores as unknown as Record<string, unknown>);

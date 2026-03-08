@@ -1228,7 +1228,6 @@ export default function App() {
         completedTrials={eventLog.filter((e) => e.eventName === 'task_completed' || e.eventName === 'task_failed').length}
         isGroupEditMode={isGroupEditMode}
         latestDistanceToTargetKm={latestDistanceToTargetKm}
-        minimapStatusVisible={minimapStatusSignalVisible}
         controlAssignmentRows={controlAssignmentRows}
         taskProgressLabel={taskProgressLabel}
         participantPrompt={participantPrompt}
@@ -1241,7 +1240,6 @@ export default function App() {
         onCompleteTask={() => finishTask('complete')}
         onFailTask={() => finishTask('fail')}
         onResetScenario={() => resetModuleScenario('manual')}
-        onTriggerMinimapStatus={() => scheduleMinimapStatusSignal('manual')}
         onSubmitWorkload={handleSubmitWorkload}
         onExportJson={handleExportJson}
         onExportCsv={handleExportCsv}
